@@ -1,10 +1,34 @@
 <!DOCTYPE html>
-<html lang="id">
+<html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Hallo World</title>
+  <meta charset="UTF-8" />
+  <title>Movie Explorer + AI Panel</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" type="image/svg+xml" href="./img/logo.svg" />
+  <base href="./">
+
+  <!-- Main Style -->
+  <link rel="stylesheet" href="./css/style.css" />
 </head>
+
 <body>
-  <h1>Hallo World</h1>
+
+  <!-- Main AI Generator Container -->
+  <section id="ai-main" style="max-width:1100px;margin:0px auto;padding:0px;border-radius:10px;background:#0b0c0d;">
+    <header id="aiMainHeader"></header>
+    <div id="aiMainContainer">Loading AI UI...</div>
+    <div id="ai-settings-placeholder" style="display:none"></div>
+  </section>
+
+  <!-- Note: movie grid, controls, modal and gallery removed — page purpose is now AI content generation -->
+
+  <!-- ================= SCRIPTS ================= -->
+  <script src="./js/config.js?v=1"></script>
+  <script src="./js/ai.js?v=23"></script>
+  <script src="./js/presets.js?v=1"></script>
+  <script src="./js/settings.js?v=23"></script>
+  <script src="./js/tmdb.js?v=23"></script>
+  <script src="./js/main.js?v=24"></script>
+
 </body>
 </html>
