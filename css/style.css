@@ -1,5 +1,5 @@
 
-body { font-family: Arial,sans-serif; background:#111; color:#fff; margin:0; padding:20px;}
+body { font-family: Arial,sans-serif; background:#111; color:#fff; margin:0; padding:2px;}
 h1 { margin-bottom:20px;}
 h2 { margin-top:0px; margin-bottom:15px;}
 .controls { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:20px;align-items: baseline;}
@@ -335,7 +335,7 @@ body { background: linear-gradient(180deg,#05060a 0%, #0a0f14 100%); }
 
 .panel{ background:var(--card); border-radius:10px; padding:12px;  color:#fff }
 .header-controls{ display:flex; gap:12px; align-items:center; margin-bottom:12px }
-.header-controls .select{ min-width:160px }
+.header-controls .select{ min-width:130px }
 .header-controls .small{ min-width:110px }
 .app-header-title{ margin:0 0 0 8px; font-size:18px; font-weight:700; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
 /* #aiMainHeader{ position:sticky; top:12px; } */
@@ -346,9 +346,9 @@ body { background: linear-gradient(180deg,#05060a 0%, #0a0f14 100%); }
 }
 
 .content-main{ display:flex; gap:12px }
-.left-col{ flex:1; display:flex; flex-direction:column; gap:12px }
-.right-col{ width:420px; display:flex; flex-direction:column; gap:12px }
-.output-panel{ background:#08131a; min-height:420px; border-radius:8px; padding:14px; color:var(--muted); }
+.left-col{ width: 50%;flex:1; display:flex; flex-direction:column; gap:12px }
+.right-col{ width:50%; display:flex; flex-direction:column; gap:12px }
+.output-panel{ background:var(--card); min-height:420px; border-radius:8px; padding:14px; color:var(--muted); }
 .output-panel h3{ margin-top:0; color:#fff }
 .card{ background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); padding:12px; border-radius:8px; }
 .chips{ display:flex; gap:8px; flex-wrap:wrap }
