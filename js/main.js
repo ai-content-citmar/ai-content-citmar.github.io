@@ -18,6 +18,136 @@ function getBackendURL(){
     return String(raw || '').replace(/\/+$/,'')
   }catch(e){ return '' }
 }
+
+/** Jika preset dipakai: tone & keyword dari preset; jika tidak: dari dropdown generator. */
+function getEffectiveToneAndKeywords(){
+  try{
+    const presetSel = document.getElementById('aiPresetSelect')
+    const presetKey = presetSel ? String(presetSel.value || '').trim() : ''
+    const p = presetKey && window.PresetsManager ? window.PresetsManager.get(presetKey) : null
+    if(p){
+      const kwParts = [p.keywordMain, p.keywordExtra].filter(Boolean).map(s=>String(s).trim())
+      if(p.keywordPriorityOrder && String(p.keywordPriorityOrder).trim()) kwParts.push(String(p.keywordPriorityOrder).trim())
+      return { tone: String(p.tone || '').trim(), keywordText: kwParts.length ? kwParts.join(', ') : '' }
+    }
+    const tone = (document.getElementById('aiToneSelect')?.value || 'neutral').trim()
+    const kwEl = document.getElementById('aiKeywordSelect')
+    let keywordText = ''
+    if(kwEl){
+      const opts = Array.from(kwEl.selectedOptions || []).map(o=>o.value).filter(Boolean)
+      keywordText = opts.length ? opts.join(', ') : (kwEl.value || '').trim()
+    }
+    return { tone, keywordText }
+  }catch(e){ return { tone: 'neutral', keywordText: '' } }
+}
+
+/** Return comma-separated string of all selected keywords (from multi-select or preset). Use in all generate flows. */
+function getSelectedKeywords(){
+  const { keywordText } = getEffectiveToneAndKeywords()
+  if(keywordText) return keywordText
+  const kwEl = document.getElementById('aiKeywordSelect')
+  if(!kwEl) return ''
+  const opts = Array.from(kwEl.selectedOptions || []).map(o=>o.value).filter(Boolean)
+  return opts.length ? opts.join(', ') : (kwEl.value || '').trim()
+}
+
+// Shared platform rules for buildFullPrompt
+const PLATFORM_INSTRUCTIONS = {
+  youtube: 'YouTube Shorts rules:\n- Title <= 60 chars, hooky.\n- Description 1–2 short sentences + CTA (watch/follow).\n- Hashtags: 6–10, mix broad + niche.',
+  tiktok: 'TikTok rules:\n- Title <= 70 chars, punchy.\n- Description 1–2 short lines, conversational.\n- Hashtags: 8–15.',
+  instagram: 'Instagram Reels rules:\n- Title <= 70 chars.\n- Description 2–3 lines, energetic.\n- Hashtags: 12–25.',
+  facebook: 'Facebook post rules:\n- Title <= 80 chars.\n- Description 2–4 sentences with engagement question.\n- Hashtags: 3–8.',
+  x: 'X (Twitter) rules:\n- Title <= 70 chars.\n- Description <= 240 chars.\n- Hashtags: 1–3 only.',
+  shopee: 'Shopee listing rules:\n- Title <= 60 chars.\n- Description: 2–4 short bullet points focusing on benefits.\n- Tags: 5–12 product/category focused.'
+}
+
+// Platform limits for character/word counters (title max chars)
+const PLATFORM_TITLE_LIMITS = { youtube: 60, tiktok: 70, instagram: 70, facebook: 80, x: 70, shopee: 60 }
+
+function updateCharCounters(){
+  const titleEl = document.getElementById('aiMainTitle')
+  const overviewEl = document.getElementById('aiMainOverview')
+  const titleCounterEl = document.getElementById('aiTitleCounter')
+  const overviewCounterEl = document.getElementById('aiOverviewCounter')
+  if(!titleEl || !overviewEl || !titleCounterEl || !overviewCounterEl) return
+  const platform = (document.getElementById('aiPlatformSelect')?.value || 'youtube').trim() || 'youtube'
+  const titleLimit = PLATFORM_TITLE_LIMITS[platform] != null ? PLATFORM_TITLE_LIMITS[platform] : 60
+  const presetKey = (document.getElementById('aiPresetSelect')?.value || '').trim()
+  const presetObj = presetKey && window.PresetsManager ? window.PresetsManager.get(presetKey) : null
+  const wordLimit = (presetObj && presetObj.maxWords != null) ? presetObj.maxWords : 120
+  const titleLen = String(titleEl.value || '').length
+  const overviewText = String(overviewEl.value || '').trim()
+  const wordCount = overviewText ? overviewText.split(/\s+/).filter(Boolean).length : 0
+  function colorClass(current, max){ if(current <= max * 0.8) return '#7cb87c'; if(current <= max) return '#d4a84b'; return '#c75c5c' }
+  titleCounterEl.textContent = `${titleLen} / ${titleLimit}`
+  titleCounterEl.style.color = colorClass(titleLen, titleLimit)
+  overviewCounterEl.textContent = `${wordCount} words${wordLimit ? ` (max ${wordLimit})` : ''}`
+  overviewCounterEl.style.color = colorClass(wordCount, wordLimit)
+}
+
+const VIRALITY_RULES = `Virality rules:
+- Start description with a hook in the first 6–10 words.
+- Hook: kalimat pembuka menarik untuk 3 detik pertama (FYP); harus bikin scroll berhenti.
+- Add a clear CTA. If goal includes Follower: add CTA for follow/subscribe/save/comment.`
+
+/** Single source of truth for AI prompt. Used by generateFromMain and generateVariations. */
+function buildFullPrompt(opts){
+  const {
+    title = '',
+    overview = '',
+    platform = 'youtube',
+    lang = 'id',
+    preset = null,
+    tone = 'neutral',
+    keywords = '',
+    presetInstructions = ''
+  } = opts
+  const goals = (preset && Array.isArray(preset.goal) && preset.goal.length) ? preset.goal : ['FYP', 'Viral']
+  const goalsText = goals.join(', ')
+  const goalExplicit = `Konten harus dioptimalkan untuk: ${goalsText}. FYP = hook kuat 3 detik pertama; SEO = keyword alami di title/deskripsi; Viral = shareable & emosional; Penjualan = CTA beli jelas; Follower = CTA follow/subscribe/save.`
+  let ctaGuide = preset && (preset.ctaMain || preset.cta)
+    ? `CTA harus sesuai tujuan: jika Penjualan → ${preset.ctaMain || preset.cta}; jika Follower → ajakan follow/subscribe/save.`
+    : 'CTA harus jelas dan sesuai tujuan konten (follow/subscribe/save atau beli).'
+  if (preset && preset.ctaAffiliate && String(preset.ctaAffiliate).trim()) {
+    ctaGuide += ` Sertakan link/CTA affiliate: "${String(preset.ctaAffiliate).trim()}".`
+  }
+  const hashtagCount = (preset && preset.hashtagCount != null) ? preset.hashtagCount : 10
+  const hashtagRule = `Hashtag: mix niche + keyword + 1–2 trending; total ${hashtagCount}; mendukung FYP dan SEO.`
+  const maxWords = (preset && preset.maxWords != null) ? preset.maxWords : 120
+  const languageInstruction = lang === 'en' ? 'Respond ONLY in English. Do not use any other language.' : 'Respond ONLY in Indonesian. Do not use any other language.'
+  const platformInstruction = PLATFORM_INSTRUCTIONS[platform] || PLATFORM_INSTRUCTIONS.youtube
+  const keywordFocus = keywords || 'none'
+  let exampleBlock = ''
+  if (preset && preset.exampleOutput && String(preset.exampleOutput).trim()) {
+    exampleBlock = `\n\nContoh output yang diinginkan (ikuti gaya dan strukturnya):\n${String(preset.exampleOutput).trim()}\n\nGenerate konten baru dengan gaya serupa.\n`
+  }
+  const trendingBlock = (preset && preset.trendingContext && String(preset.trendingContext).trim())
+    ? `\nKonteks trending: ${String(preset.trendingContext).trim()}\n`
+    : ''
+  return `${languageInstruction}
+You are a creative social copywriter. Platform: ${platform}. Write in ${lang === 'id' ? 'Indonesian' : 'English'}.
+
+Context:
+- Title: "${title}"
+- Overview: "${overview}"
+- Keyword focus: ${keywordFocus}
+- Tone: ${tone}
+
+${goalExplicit}
+${ctaGuide}
+${hashtagRule}
+Max words description: ${maxWords}.
+
+${platformInstruction}
+${presetInstructions ? ('Preset rules: ' + presetInstructions + '\n\n') : ''}${VIRALITY_RULES}
+${trendingBlock}${exampleBlock}
+
+Output JSON only with these exact keys: {"title":"...","description":"...","hashtags":["#..","#.."],"hook":"...","narratorScript":"..."}
+- hook: kalimat pembuka menarik untuk 3 detik pertama (FYP).
+- narratorScript: teks untuk voice/narator video (script yang dibacakan).
+Return only the JSON.`.trim()
+}
+
 // ===== Keyword extraction & suggestions =====
 const STOPWORDS_EN = new Set((`a,an,and,are,as,at,be,by,for,from,has,he,in,is,it,its,of,on,that,the,to,was,were,will,with`.split(',')));
 const STOPWORDS_ID = new Set((`yang,dan,di,ke,dari,untuk,pada,adalah,ini,itu,sebuah,oleh,atau,karena,karna,adanya`.split(',')));
@@ -63,6 +193,34 @@ function pushKeywordHistory(list){
   }catch(e){}
 }
 
+const GENERATE_HISTORY_KEY = 'genco_generate_history'
+const GENERATE_HISTORY_MAX = 50
+const ACTIVE_PRESET_KEY = 'genco_active_preset'
+const FEEDBACK_KEY = 'genco_feedback'
+const FEEDBACK_MAX = 200
+function getGenerateHistory(){
+  try{ return JSON.parse(localStorage.getItem(GENERATE_HISTORY_KEY)||'[]') }catch(e){ return [] }
+}
+function pushGenerateHistory(entry){
+  try{
+    const list = getGenerateHistory()
+    const id = 'h_' + Date.now()
+    list.unshift(Object.assign({ id }, entry))
+    const trimmed = list.slice(0, GENERATE_HISTORY_MAX)
+    localStorage.setItem(GENERATE_HISTORY_KEY, JSON.stringify(trimmed))
+  }catch(e){}
+}
+function getFeedbackStore(){
+  try{ return JSON.parse(localStorage.getItem(FEEDBACK_KEY)||'[]') }catch(e){ return [] }
+}
+function setFeedback(id, rating){
+  try{
+    const list = getFeedbackStore().filter(x=> x.id !== id)
+    list.unshift({ id, rating, ts: Date.now() })
+    localStorage.setItem(FEEDBACK_KEY, JSON.stringify(list.slice(0, FEEDBACK_MAX)))
+  }catch(e){}
+}
+
 async function suggestKeywords({useAI=false, provider='openrouter', apiKey='', title='', overview='', topN=5}){
   // if useAI and backend available, call AI to generate keywords
   if(useAI){
@@ -83,91 +241,15 @@ async function suggestKeywords({useAI=false, provider='openrouter', apiKey='', t
 }
 function maskKey(k){ try{ if(!k) return false; const s = String(k); return '***'+s.slice(-4) }catch(e){ return true } }
 
-async function generateVariations(count = 3) {
-  const lang = document.getElementById('aiLangSelect')?.value || 'id'
-  const prov = document.getElementById('aiProviderSelect')?.value || 'gemini'
-  const model = document.getElementById('aiModelSelect')?.value || ''
-  const apiKey = (function(){ try{ const raw = localStorage.getItem('ai-settings'); if(raw){ const s = JSON.parse(raw); const k = s?.keys?.[prov]; if(k) return String(k).trim() } }catch(e){} return String(localStorage.getItem('ai_api_key')||'').trim() })()
-  const platform = document.getElementById('aiPlatformSelect')?.value || 'youtube'
-  const chosenKeyword = document.getElementById('aiKeywordSelect')?.value || ''
-  // If a preset is selected and defines a tone, use that; otherwise use dropdown
-  const presetSel_top = document.getElementById('aiPresetSelect')
-  const presetKey_top = presetSel_top ? String(presetSel_top.value || '').trim() : ''
-  let presetObj_top = null
-  try{ presetObj_top = presetKey_top ? window.PresetsManager.get(presetKey_top) : null }catch(e){ presetObj_top = null }
-  const tone = (presetObj_top && presetObj_top.tone) ? presetObj_top.tone : (document.getElementById('aiToneSelect')?.value || 'neutral')
-  const title = document.getElementById('aiMainTitle')?.value || ''
-  const overview = document.getElementById('aiMainOverview')?.value || ''
-
-  const panel = document.getElementById('aiResultPanel')
-  panel.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><strong>Variations</strong><div></div></div>`
-
-  // build presetInstructions for variations
-  let presetInstructions = ''
-  try{
-    const presetSel = document.getElementById('aiPresetSelect')
-    const presetKey = presetSel ? String(presetSel.value||'').trim() : ''
-    if(presetKey){ const p = window.PresetsManager.get(presetKey); if(p) presetInstructions = `Platform: ${p.platform||platform}. Goal: ${p.goal||''}. Tone: ${p.tone||''}. Length: ${p.length||''}. CTA: ${p.cta||''}. Structure: ${p.structure||''}. HashtagCount: ${p.hashtagCount||''}.` }
-  }catch(e){ presetInstructions = '' }
-
-  const platformInstructionMap = { youtube: 'YouTube Shorts rules: Title <= 60 chars, Description short, Hashtags 6–10.', tiktok: 'TikTok rules: punchy, Hashtags 8–15.', instagram: 'Instagram: energetic, Hashtags 12–25.', shopee: 'Shopee: product-focused, 5 tags.' }
-  const platformInstruction = platformInstructionMap[platform] || ''
-  aiLog('debug','variation.prepare',{ platform, lang, provider: prov, model, apiKeyPresent: !!apiKey, apiKeyMasked: maskKey(apiKey) })
-
-  try{
-    if(!apiKey) throw new Error('AI API key is empty for selected provider (set it in Settings, then Save)')
-    const results = []
-
-    for(let i=0;i<count;i++){
-      const languageInstruction = lang === 'en' ? 'Respond ONLY in English. Do not use any other language.' : 'Respond ONLY in Indonesian. Do not use any other language.'
-      // include selected keywords into prompt to focus generation
-      const selKeywords = (function(){ try{ const s = document.getElementById('aiKeywordSelect'); if(!s) return ''; const vals = Array.from(s.selectedOptions||[]).map(o=>o.value).filter(Boolean); return vals.length ? vals.join(', ') : '' }catch(e){ return '' } })()
-      const keywordNote = selKeywords ? (`\n- Keywords: ${selKeywords}`) : ''
-      const prompt = `${languageInstruction}\nYou are a creative social copywriter. Platform: ${platform}. Write in ${lang==='id'?'Indonesian':'English'}.\nContext:\n- Title: "${title}"\n- Overview: "${overview}"${keywordNote}\n- Keyword focus: ${chosenKeyword||'none'}\n- Tone: ${tone}\n\n${platformInstruction}\n\n${presetInstructions ? ('Preset rules: ' + presetInstructions + '\\n\\n') : ''}\nReturn only JSON: {"title":"...","description":"...","hashtags":["#.."]}`
-      let raw = null
-      const reqMeta = { provider: prov, model, attempt: i+1 }
-      aiLog('info','variation.request',{ ...reqMeta, prompt })
-      const t0 = performance.now()
-      try{ raw = await window.AI.generate({ provider: prov, apiKey, prompt, model })
-        const dur = Math.round(performance.now() - t0)
-        aiLog('info','variation.response',{ ...reqMeta, durationMs: dur, rawLength: String(raw||'').length })
-      }catch(e){ raw = String(e?.message||e); aiLog('error','variation.error',{ ...reqMeta, error: String(e) }) }
-
-      let parsed = null
-      try{ parsed = JSON.parse((String(raw).match(/\{[\s\S]*\}/)||[''])[0]) }catch(e){ parsed = { title: '', description: String(raw||'').slice(0,800), hashtags: [] } }
-      results.push({ i: i+1, parsed, raw })
-
-      // render card
-      const card = document.createElement('div')
-      card.style.borderTop = '1px solid rgba(255,255,255,0.04)'
-      card.style.paddingTop = '10px'
-      card.style.marginTop = '10px'
-      card.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:flex-start"><strong>Var ${i+1}</strong><div style="display:flex;gap:8px"><button data-copy-target="var_${i}_title">Copy Title</button><button data-copy-target="var_${i}_desc">Copy Desc</button><button data-copy-target="var_${i}_tags">Copy Tags</button></div></div><div id="var_${i}_title" style="margin-top:8px;color:#d9cd71">${parsed.title||''}</div><div id="var_${i}_desc" style="margin-top:8px;color:#fff">${parsed.description||''}</div><div id="var_${i}_tags" style="margin-top:8px;color:#2c9dc1">${Array.isArray(parsed.hashtags)?parsed.hashtags.join(' '):parsed.hashtags||''}</div>`
-      panel.appendChild(card)
-    }
-
-    panel.querySelectorAll('button[data-copy-target]').forEach(b=>{
-      b.addEventListener('click', async ()=>{
-        const tgt = b.getAttribute('data-copy-target')
-        const el = document.getElementById(tgt)
-        const text = el ? el.textContent : ''
-        try{ await navigator.clipboard.writeText(text); const prev = b.textContent; b.textContent = 'Copied'; setTimeout(()=>b.textContent = prev,1200) }catch(e){}
-      })
-    })
-
-    // export JSON
-    const exp = document.createElement('div')
-    exp.style.marginTop = '10px'
-    exp.innerHTML = `<button id="exportJsonVariations" class="primary">Export JSON</button>`
-    panel.appendChild(exp)
-    document.getElementById('exportJsonVariations').addEventListener('click', ()=>{
-      const json = JSON.stringify(results.map(r=>r.parsed), null, 2)
-      const blob = new Blob([json], { type: 'application/json' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a'); a.href = url; a.download = `${(title||'variations').replace(/[^a-z0-9\-]/gi,'_')}_variations.json`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
-    })
-
-  }catch(err){ console.error('generateVariations failed', err); panel.appendChild(document.createElement('div')).textContent = 'Variations failed. See console.' }
+function showToast(message, type){
+  type = type || 'info'
+  let el = document.getElementById('genco-toast')
+  if(!el){ el = document.createElement('div'); el.id = 'genco-toast'; el.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:9999;max-width:320px;padding:12px 16px;border-radius:8px;background:#1a1f26;color:#fff;box-shadow:0 4px 12px rgba(0,0,0,0.4);font-size:14px;transition:opacity 0.2s'; document.body.appendChild(el) }
+  el.textContent = message
+  el.style.background = type === 'error' ? '#4a2020' : type === 'success' ? '#1a3020' : '#1a1f26'
+  el.style.opacity = '1'
+  clearTimeout(el._toastTimer)
+  el._toastTimer = setTimeout(()=>{ el.style.opacity = '0' }, 2800)
 }
 
 // -----------------------
@@ -191,13 +273,15 @@ function mountAIGeneratorMain(){
         <div class="nav-item" data-action="settings"><svg viewBox="0 0 24 24"><path d="M19.4 12.9a7.2 7.2 0 0 0 0-1.8l2.1-1.6-2-3.4-2.5.6a7 7 0 0 0-1.6-.9l-.4-2.6H9.9l-.4 2.6a7 7 0 0 0-1.6.9L5.4 6.1 3.4 9.5l2.1 1.6a7.2 7.2 0 0 0 0 1.8L3.4 15l2 3.4 2.5-.6c.5.4 1 .7 1.6.9l.4 2.6h4.2l.4-2.6c.6-.2 1.1-.5 1.6-.9l2.5.6 2-3.4z"/></svg><span class="nav-label">Settings</span></div>
       </aside>
 
-      <main style="padding:0 6px">
+      <main style="padding:6px">
 
         <div class="content-main">
           <section class="left-col">
             <div class="panel card">
-              <input id="aiMainTitle" placeholder="Topic / Title" style="width:96%;padding:10px;border-radius:8px;border:none;background:#0f1a20;color:#fff;margin-bottom:8px" />
-              <textarea id="aiMainOverview" placeholder="Overview / Description" style="width:96%;padding:10px;border-radius:8px;border:none;background:#0f1a20;color:#fff"></textarea>
+              <input id="aiMainTitle" placeholder="Topic / Title" style="width:96%;padding:10px;border-radius:8px;border:1px solid #80808042;background:var(--card);color:#fff;margin-bottom:4px" />
+              <div id="aiTitleCounter" class="char-counter" style="font-size:11px;margin-bottom:8px;min-height:14px">0 / 60</div>
+              <textarea id="aiMainOverview" placeholder="Overview / Description" style="width:96%;padding:10px;border-radius:8px;border:1px solid #80808042;background:var(--card);color:#fff"></textarea>
+              <div id="aiOverviewCounter" class="char-counter" style="font-size:11px;margin-top:4px;min-height:14px">0 words</div>
               <div style="display:flex;flex-wrap: wrap;gap:8px;align-items:center;margin-top:10px">
                 <select id="aiLangSelect" style="padding:8px;border-radius:8px;background:#0b1218;color:#fff;border:none">
                   <option value="id">Indonesia</option>
@@ -255,7 +339,7 @@ function mountAIGeneratorMain(){
     headerEl.innerHTML = `
       <div class="panel" style="display:flex;gap:10px;align-items:center;justify-content:flex-end;flex-direction: row-reverse;">
         <button id="sidebarToggle" class="burger-btn" aria-label="Menu" title="Menu"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
-        <h1 class="app-header-title">AI Social Content Generator</h1>
+        <h1 class="app-header-title">AI Content Generator untuk FYP &amp; Viral</h1>
         <div class="logo">
         <image src="./img/logo.svg" alt="Genco Logo" width="32" height="32" />
         </div>
@@ -274,17 +358,24 @@ function mountAIGeneratorMain(){
             <option value="gemini">Gemini</option>
             <option value="openai">OpenAI</option>
             <option value="openrouter">OpenRouter</option>
+            <option value="groq">Groq</option>
+            <option value="together">Together</option>
+            <option value="cohere">Cohere</option>
+            <option value="huggingface">Hugging Face</option>
+            <option value="deepseek">DeepSeek</option>
           </select>
           <select id="aiModelSelect" class="select">
             <option value="">(auto)</option>
           </select>
           <select id="aiPlatformSelect" class="small">
-            <option value="youtube">YouTube Short</option>
             <option value="tiktok">TikTok</option>
+            <option value="youtube">YouTube Short</option>
+            <option value="shopee">Shopee</option>
             <option value="instagram">Instagram</option>
             <option value="facebook">Facebook</option>
             <option value="x">X (Twitter)</option>
-            <option value="shopee">Shopee</option>
+            <option value="linkedin">LinkedIn</option>
+            <option value="pinterest">Pinterest</option>
           </select>
         </div>
         <div style="display:flex;gap:8px">
@@ -309,12 +400,17 @@ function mountAIGeneratorMain(){
 
   // wiring
   document.getElementById('aiGenerateBtn')?.addEventListener('click', generateFromMain)
-  document.getElementById('aiVariationsBtn')?.addEventListener('click', ()=> generateVariations(3))
+  document.getElementById('aiVariationsBtn')?.addEventListener('click', ()=> generateVariations())
   document.getElementById('aiClearBtn')?.addEventListener('click', ()=>{
     document.getElementById('aiMainTitle').value = ''
     document.getElementById('aiMainOverview').value = ''
     document.getElementById('aiResultPanel').innerHTML = 'Hasil generate akan muncul di sini.'
+    try{ updateCharCounters() }catch(e){}
   })
+  document.getElementById('aiMainTitle')?.addEventListener('input', updateCharCounters)
+  document.getElementById('aiMainOverview')?.addEventListener('input', updateCharCounters)
+  document.getElementById('aiPlatformSelect')?.addEventListener('change', updateCharCounters)
+  try{ updateCharCounters() }catch(e){}
 
   // models wiring
   const providerEl = document.getElementById('aiProviderSelect')
@@ -332,6 +428,7 @@ function mountAIGeneratorMain(){
     presetSel.addEventListener('change', ()=>{
       const key = String(presetSel.value || '').trim()
       try{ updatePresetPreview(key) }catch(e){}
+      try{ updateCharCounters() }catch(e){}
     })
   }
 
@@ -354,24 +451,33 @@ function mountAIGeneratorMain(){
   try{
     const navItems = document.querySelectorAll('#aiMainContainer .sidebar .nav-item')
     function showView(view){
-      const presetSel = document.getElementById('aiPresetSelect')
       const set = document.getElementById('ai-settings-placeholder')
       const pres = document.getElementById('ai-presets-placeholder')
+      const hist = document.getElementById('ai-history-placeholder')
       const gen = document.getElementById('aiMainContainer')
       if(view === 'settings'){
         if(gen) gen.style.display = 'none'
         if(pres) pres.style.display = 'none'
+        if(hist) hist.style.display = 'none'
         if(set) set.style.display = 'block'
         renderSettingsPage()
       }else if(view === 'presets'){
         if(gen) gen.style.display = 'none'
         if(set) set.style.display = 'none'
+        if(hist) hist.style.display = 'none'
         if(pres) pres.style.display = 'block'
         renderPresetsPage()
+      }else if(view === 'history'){
+        if(gen) gen.style.display = 'none'
+        if(set) set.style.display = 'none'
+        if(pres) pres.style.display = 'none'
+        if(hist) hist.style.display = 'block'
+        renderHistoryPage()
       }else{
         if(gen) gen.style.display = 'block'
         if(set) set.style.display = 'none'
         if(pres) pres.style.display = 'none'
+        if(hist) hist.style.display = 'none'
       }
     }
     navItems.forEach(it=>{
@@ -381,7 +487,7 @@ function mountAIGeneratorMain(){
         const action = it.getAttribute('data-action')
         if(action === 'settings') showView('settings')
         else if(action === 'presets') showView('presets')
-        else if(action === 'history') showView('generator')
+        else if(action === 'history') showView('history')
         else showView('generator')
         // close sidebar on mobile
         if(document.body.classList.contains('sidebar-open')) document.body.classList.remove('sidebar-open')
@@ -413,7 +519,7 @@ function mountAIGeneratorMain(){
                 <button id="settingsBackendTest" class="secondary">Test</button>
                 <button id="settingsBackendSave" class="primary">Save</button>
               </div>
-              <div style="font-size:12px;margin-top:6px;color:#c9d0b3">Set the backend endpoint used by the app (can be local or remote).</div>
+              <div style="font-size:12px;margin-top:6px;color:#c9d0b3">Backend untuk AI dan penyimpanan presets. Lokal (mis. http://127.0.0.1:8787) = simpan di project; external (mis. workers.dev) = simpan di server tersebut.</div>
             </div>
 
             <div class="control-group">
@@ -422,6 +528,11 @@ function mountAIGeneratorMain(){
                 <option value="gemini">Gemini</option>
                 <option value="openai">OpenAI</option>
                 <option value="openrouter">OpenRouter</option>
+                <option value="groq">Groq</option>
+                <option value="together">Together</option>
+                <option value="cohere">Cohere</option>
+                <option value="huggingface">Hugging Face</option>
+                <option value="deepseek">DeepSeek</option>
               </select>
             </div>
 
@@ -699,13 +810,113 @@ function mountAIGeneratorMain(){
 
   console.debug('mountAIGeneratorMain: renderSettingsPage defined')
 
-  // Presets page renderer
+  function renderHistoryPage(){
+    const placeholder = document.getElementById('ai-history-placeholder')
+    if(!placeholder) return
+    const list = getGenerateHistory()
+    const feedbackList = getFeedbackStore()
+    const byPlatform = {}
+    const byPreset = {}
+    list.forEach(e=>{
+      const p = e.platform || '(none)'
+      byPlatform[p] = (byPlatform[p]||0) + 1
+      const k = e.presetKey || '(manual)'
+      byPreset[k] = (byPreset[k]||0) + 1
+    })
+    const topPreset = Object.keys(byPreset).length ? Object.entries(byPreset).sort((a,b)=>b[1]-a[1])[0] : null
+    const goodCount = feedbackList.filter(x=>x.rating==='good').length
+    const badCount = feedbackList.filter(x=>x.rating==='bad').length
+    const platformLines = Object.entries(byPlatform).map(([k,v])=>k+': '+v).join(' · ') || '-'
+    placeholder.style.display = 'block'
+    placeholder.innerHTML = `
+      <div class="panel presets-page">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <h2>History Generate</h2>
+          <div style="display:flex;gap:8px">
+            <button id="historyExportCsvBtn" class="secondary">Export riwayat CSV</button>
+            <button id="historyCloseBtn" class="secondary">Close</button>
+          </div>
+        </div>
+        <div id="historyStats" style="margin-top:10px;padding:10px;background:rgba(255,255,255,0.03);border-radius:8px;font-size:13px;color:#aaa">
+          <strong>Stats</strong>: Total ${list.length} generate. Platform: ${platformLines}. ${topPreset ? 'Preset terbanyak: ' + topPreset[0] + ' (' + topPreset[1] + ').' : ''} Feedback: ${goodCount} Bagus, ${badCount} Kurang.
+        </div>
+        <p style="font-size:13px;color:#888;margin-top:8px">Daftar generate terakhir. Klik "Pakai lagi" untuk mengisi Title & Overview dan kembali ke Generator.</p>
+        <div id="historyList" style="margin-top:12px;display:flex;flex-direction:column;gap:8px"></div>
+        ${list.length === 0 ? '<p style="color:#666;margin-top:12px">Belum ada riwayat.</p>' : ''}
+      </div>
+    `
+    const listEl = document.getElementById('historyList')
+    if(listEl && list.length){
+      list.forEach(entry=>{
+        const d = entry.ts ? new Date(entry.ts) : null
+        const dateStr = d ? d.toLocaleString() : ''
+        const titleSnippet = (entry.title || '').slice(0, 50) + ((entry.title||'').length > 50 ? '…' : '')
+        const row = document.createElement('div')
+        row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:10px;background:rgba(255,255,255,0.03);border-radius:8px;flex-wrap:wrap;gap:8px'
+        row.innerHTML = `
+          <div>
+            <div style="font-weight:600">${(titleSnippet || '(no title)').replace(/</g,'&lt;')}</div>
+            <div style="font-size:12px;color:#888;margin-top:4px">${entry.platform || ''}${entry.presetKey ? ' · ' + String(entry.presetKey).replace(/</g,'&lt;') : ''}${entry.goals ? ' · ' + String(entry.goals).replace(/</g,'&lt;') : ''} · ${entry.type || 'generate'} · ${dateStr}</div>
+          </div>
+          <button class="small primary" data-history-id="${entry.id || ''}" data-history-title="${String(entry.title||'').replace(/"/g,'&quot;')}" data-history-overview="${String(entry.overview||'').replace(/"/g,'&quot;').replace(/</g,'&lt;')}">Pakai lagi</button>
+        `
+        listEl.appendChild(row)
+      })
+      listEl.querySelectorAll('button[data-history-id]').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          const title = btn.getAttribute('data-history-title') || ''
+          const overview = btn.getAttribute('data-history-overview') || ''
+          const titleEl = document.getElementById('aiMainTitle')
+          const overviewEl = document.getElementById('aiMainOverview')
+          if(titleEl) titleEl.value = title
+          if(overviewEl) overviewEl.value = overview
+          showView('generator')
+          document.querySelectorAll('#aiMainContainer .sidebar .nav-item').forEach(n=>n.classList.remove('active'))
+          const genNav = document.querySelector('#aiMainContainer .sidebar .nav-item[data-action="generator"]')
+          if(genNav) genNav.classList.add('active')
+        })
+      })
+    }
+    document.getElementById('historyExportCsvBtn')?.addEventListener('click', ()=>{
+      const list = getGenerateHistory()
+      const headers = ['ts','date','title','overview','platform','presetKey','goals','type']
+      const rows = [headers]
+      list.forEach(e=>{
+        const d = e.ts ? new Date(e.ts) : null
+        rows.push([
+          e.ts || '',
+          d ? d.toISOString() : '',
+          (e.title||'').replace(/"/g,'""'),
+          (e.overview||'').replace(/"/g,'""'),
+          e.platform || '',
+          e.presetKey || '',
+          (e.goals||'').replace(/"/g,'""'),
+          e.type || ''
+        ])
+      })
+      const csv = rows.map(r=> r.map(c=>'"'+String(c)+'"').join(',')).join('\n')
+      const blob = new Blob(['\ufeff'+csv], { type: 'text/csv;charset=utf-8;' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a'); a.href = url; a.download = 'genco_history_' + new Date().toISOString().slice(0,10) + '.csv'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
+      showToast('Riwayat di-export', 'success')
+    })
+    document.getElementById('historyCloseBtn')?.addEventListener('click', ()=>{
+      placeholder.style.display = 'none'
+      document.getElementById('aiMainContainer').style.display = 'block'
+      document.querySelectorAll('#aiMainContainer .sidebar .nav-item').forEach(n=>n.classList.remove('active'))
+      const genNav = document.querySelector('#aiMainContainer .sidebar .nav-item[data-action="generator"]')
+      if(genNav) genNav.classList.add('active')
+    })
+  }
+
+  // Presets page renderer (sync from backend first so list is global/cross-device)
   function renderPresetsPage(){
     const placeholder = document.getElementById('ai-presets-placeholder')
     if(!placeholder) return
     const existing = placeholder.querySelector('.presets-page')
     if(existing){ return }
 
+    ;(window.PresetsManager.syncFromBackend || (()=>Promise.resolve()))().then(()=>{
     const presets = window.PresetsManager.list()
     placeholder.innerHTML = `
       <div class="panel presets-page">
@@ -714,12 +925,33 @@ function mountAIGeneratorMain(){
           <button id="presetsCloseBtn" class="secondary">Close</button>
         </div>
         <div id="presetsList" style="display:flex;flex-direction:column;gap:8px;margin-top:10px"></div>
-        <div style="margin-top:12px;display:flex;gap:8px">
-          <input id="newPresetName" placeholder="Nama preset baru" style="flex:1;padding:8px;border-radius:6px;background:#0b1218;border:none;color:#fff" />
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+          <input id="newPresetName" placeholder="Nama preset baru" style="flex:1;min-width:160px;padding:8px;border-radius:6px;background:#0b1218;border:none;color:#fff" />
           <button id="createPresetBtn" class="primary">Buat</button>
+        </div>
+        <div id="presetsBackendIndicator" style="margin-top:10px;font-size:11px;color:#6a8;padding:6px 8px;background:rgba(0,40,20,0.3);border-radius:6px"></div>
+        <div style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.08);display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <span style="font-size:12px;color:#888">Backup aman (simpan ke file):</span>
+          <button id="presetsExportBackupBtn" class="secondary" type="button">Export backup (.json)</button>
+          <label style="margin:0;cursor:pointer">
+            <input type="file" id="presetsImportBackupInput" accept=".json,application/json" style="display:none" />
+            <span class="secondary" style="display:inline-block;padding:8px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.2)">Import backup</span>
+          </label>
         </div>
       </div>
     `
+
+    // Tampilkan backend aktif: presets selalu disimpan ke backend ini (lokal atau external)
+    const presetsBackendIndicator = document.getElementById('presetsBackendIndicator')
+    if (presetsBackendIndicator) {
+      const url = (window.PresetsManager && window.PresetsManager.getBackendURL()) || ''
+      if (url) {
+        const isLocal = /127\.0\.0\.1|localhost|^https?:\/\/\[?::1\]?/i.test(url)
+        presetsBackendIndicator.textContent = 'Presets disimpan ke backend: ' + (isLocal ? 'Lokal (project)' : 'External') + ' — ' + url
+      } else {
+        presetsBackendIndicator.textContent = 'Presets hanya di browser. Set Backend URL di Settings agar tersimpan ke server.'
+      }
+    }
 
     function renderList(){
       const listEl = document.getElementById('presetsList')
@@ -736,47 +968,267 @@ function mountAIGeneratorMain(){
       })
     }
 
+    function esc(v){ return String(v||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
+    function getEditVal(id){ const el = document.getElementById(id); return el ? String(el.value||'').trim() : '' }
+    function getEditNum(id, def){ const n = parseInt(document.getElementById(id)?.value, 10); return isNaN(n) ? def : n }
+    function getEditChecks(name){ return Array.from(document.querySelectorAll(`input[name="${name}"]:checked`)).map(el=>el.value) }
+
     function openEditor(key){
-      const data = window.PresetsManager.get(key) || { label:key, platform: 'youtube', goal:'', tone:'', length:'short', cta:'', structure:'', hashtagCount:6 }
+      const data = window.PresetsManager.get(key) || window.PresetsManager.getDefaultPreset({ label: key })
+      const goalArr = Array.isArray(data.goal) ? data.goal : (data.goal ? String(data.goal).split(',').map(s=>s.trim()).filter(Boolean) : [])
+      const emotionArr = Array.isArray(data.emotionTrigger) ? data.emotionTrigger : []
+      const ctaEngArr = Array.isArray(data.ctaEngagement) ? data.ctaEngagement : []
       const modal = document.createElement('div')
-      modal.className = 'panel'
+      modal.className = 'panel preset-editor-modal'
       modal.style.marginTop = '12px'
+      modal.style.maxHeight = '85vh'
+      modal.style.overflowY = 'auto'
       modal.innerHTML = `
-        <h3>Edit Preset: ${key}</h3>
-        <div style="display:flex;flex-direction:column;gap:8px">
-          <label>Label</label>
-          <input id="editLabel" value="${(data.label||key).replace(/\"/g,'&quot;')}" />
-          <label>Platform</label>
-          <select id="editPlatform"><option value="youtube">YouTube</option><option value="tiktok">TikTok</option><option value="instagram">Instagram</option><option value="shopee">Shopee</option></select>
-          <label>Tujuan</label>
-          <input id="editGoal" value="${(data.goal||'').replace(/\"/g,'&quot;')}" />
-          <label>Gaya / Tone</label>
-          <input id="editTone" value="${(data.tone||'').replace(/\"/g,'&quot;')}" />
-          <label>Panjang (short/medium/long)</label>
-          <input id="editLength" value="${(data.length||'short').replace(/\"/g,'&quot;')}" />
-          <label>CTA</label>
-          <input id="editCta" value="${(data.cta||'').replace(/\"/g,'&quot;')}" />
-          <label>Struktur output (contoh: Hook -> Benefit -> CTA)</label>
-          <input id="editStructure" value="${(data.structure||'').replace(/\"/g,'&quot;')}" />
-          <label>Jumlah hashtag (angka)</label>
-          <input id="editHashtagCount" value="${(data.hashtagCount||6)}" />
-          <div style="display:flex;gap:8px"><button id="savePresetEd" class="primary">Save</button><button id="cancelPresetEd" class="secondary">Cancel</button></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+          <h3 style="margin:0">Edit Preset: ${esc(key)}</h3>
+          <div style="display:flex;gap:8px">
+            <button type="button" class="small" data-template="JualanViral">Jualan Viral</button>
+            <button type="button" class="small" data-template="EdukasiViral">Edukasi Viral</button>
+            <button type="button" class="small" data-template="BrandingViral">Branding Viral</button>
+            <button id="cancelPresetEd" class="secondary">Cancel</button>
+            <button id="savePresetEd" class="primary">Save</button>
+          </div>
+        </div>
+        <div class="preset-accordion" style="display:flex;flex-direction:column;gap:8px">
+          <details class="preset-section" open>
+            <summary style="cursor:pointer;font-weight:600;padding:6px 0">🧩 Section 1: Basic Info</summary>
+            <div style="padding:8px 0 0 12px;display:flex;flex-direction:column;gap:8px">
+              <label>Label Preset <span title="Digunakan untuk mengoptimalkan FYP dan SEO">?</span></label>
+              <input id="editLabel" placeholder="Viral Jualan Pro" value="${esc(data.label||key)}" style="max-width:320px" />
+              <label>Platform</label>
+              <select id="editPlatform">
+                <option value="tiktok" ${(data.platform||'')==='tiktok'?'selected':''}>TikTok</option>
+                <option value="youtube" ${(data.platform||'')==='youtube'?'selected':''}>YouTube Shorts</option>
+                <option value="shopee" ${(data.platform||'')==='shopee'?'selected':''}>Shopee</option>
+                <option value="instagram" ${(data.platform||'')==='instagram'?'selected':''}>Instagram Reels</option>
+                <option value="facebook" ${(data.platform||'')==='facebook'?'selected':''}>Facebook</option>
+                <option value="X" ${(data.platform||'')==='X'?'selected':''}>X (Twitter)</option>
+                 <option value="linkedin" ${(data.platform||'')==='linkedin'?'selected':''}>LinkedIn</option>
+                <option value="pinterest" ${(data.platform||'')==='pinterest'?'selected':''}>Pinterest</option>
+              </select>
+              <label>Tujuan Utama (Goal)</label>
+              <div style="display:flex;flex-wrap:wrap;gap:8px">
+                <label><input type="checkbox" name="editGoal" value="FYP" ${goalArr.includes('FYP')?'checked':''} /> FYP</label>
+                <label><input type="checkbox" name="editGoal" value="SEO" ${goalArr.includes('SEO')?'checked':''} /> SEO</label>
+                <label><input type="checkbox" name="editGoal" value="Viewer" ${goalArr.includes('Viewer')?'checked':''} /> Viewer</label>
+                <label><input type="checkbox" name="editGoal" value="Viral" ${goalArr.includes('Viral')?'checked':''} /> Viral</label>
+                <label><input type="checkbox" name="editGoal" value="Penjualan" ${goalArr.includes('Penjualan')?'checked':''} /> Penjualan</label>
+                <label><input type="checkbox" name="editGoal" value="Follower" ${goalArr.includes('Follower')?'checked':''} /> Follower</label>
+              </div>
+            </div>
+          </details>
+          <details class="preset-section">
+            <summary style="cursor:pointer;font-weight:600;padding:6px 0">🧑‍💼 Section 2: AI Role & Audience</summary>
+            <div style="padding:8px 0 0 12px;display:flex;flex-direction:column;gap:8px">
+              <label>Peran AI (Role / Persona)</label>
+              <textarea id="editRole" rows="2" placeholder="Kamu adalah viral content strategist dan social media copywriter profesional">${esc(data.role)}</textarea>
+              <label>Target Audiens</label>
+              <textarea id="editTargetAudience" rows="2" placeholder="Usia 18–35, suka belanja online, suka promo, pemula">${esc(data.targetAudience)}</textarea>
+            </div>
+          </details>
+          <details class="preset-section">
+            <summary style="cursor:pointer;font-weight:600;padding:6px 0">✍️ Section 3: Style & Emotion</summary>
+            <div style="padding:8px 0 0 12px;display:flex;flex-direction:column;gap:8px">
+              <label>Gaya / Tone</label>
+              <input id="editTone" placeholder="Santai, persuasif, relatable, urgency ringan" value="${esc(data.tone)}" />
+              <label>Aturan Bahasa (Language Rules)</label>
+              <textarea id="editLanguageRules" rows="2" placeholder="Bahasa Indonesia santai, kalimat pendek, maksimal 2 emoji, tidak formal">${esc(data.languageRules)}</textarea>
+              <label>Emosi Target (Emotion Trigger)</label>
+              <div style="display:flex;flex-wrap:wrap;gap:8px">
+                <label><input type="checkbox" name="editEmotion" value="Penasaran" ${emotionArr.includes('Penasaran')?'checked':''} /> Penasaran</label>
+                <label><input type="checkbox" name="editEmotion" value="Takut ketinggalan" ${emotionArr.includes('Takut ketinggalan')?'checked':''} /> Takut ketinggalan</label>
+                <label><input type="checkbox" name="editEmotion" value="Senang" ${emotionArr.includes('Senang')?'checked':''} /> Senang</label>
+                <label><input type="checkbox" name="editEmotion" value="Termotivasi" ${emotionArr.includes('Termotivasi')?'checked':''} /> Termotivasi</label>
+                <label><input type="checkbox" name="editEmotion" value="Ingin beli" ${emotionArr.includes('Ingin beli')?'checked':''} /> Ingin beli</label>
+              </div>
+            </div>
+          </details>
+          <details class="preset-section">
+            <summary style="cursor:pointer;font-weight:600;padding:6px 0">🧱 Section 4: Structure & Format</summary>
+            <div style="padding:8px 0 0 12px;display:flex;flex-direction:column;gap:8px">
+              <label>Struktur Output</label>
+              <input id="editStructure" placeholder="Hook → Problem → Benefit → Proof → Question → CTA" value="${esc(data.structure)}" />
+              <label>Hook Style</label>
+              <select id="editHookStyle">
+                <option value="">—</option>
+                <option value="Pertanyaan" ${(data.hookStyle||'')==='Pertanyaan'?'selected':''}>Pertanyaan</option>
+                <option value="Fakta mengejutkan" ${(data.hookStyle||'')==='Fakta mengejutkan'?'selected':''}>Fakta mengejutkan</option>
+                <option value="Rahasia" ${(data.hookStyle||'')==='Rahasia'?'selected':''}>Rahasia</option>
+                <option value="Larangan" ${(data.hookStyle||'')==='Larangan'?'selected':''}>Larangan</option>
+                <option value="Cerita singkat" ${(data.hookStyle||'')==='Cerita singkat'?'selected':''}>Cerita singkat</option>
+              </select>
+              <label>Format Output</label>
+              <select id="editFormatOutput">
+                <option value="">—</option>
+                <option value="Per baris sesuai struktur" ${(data.formatOutput||'')==='Per baris sesuai struktur'?'selected':''}>Per baris sesuai struktur</option>
+                <option value="1 paragraf" ${(data.formatOutput||'')==='1 paragraf'?'selected':''}>1 paragraf</option>
+                <option value="2 paragraf" ${(data.formatOutput||'')==='2 paragraf'?'selected':''}>2 paragraf</option>
+              </select>
+              <label>Panjang Konten</label>
+              <select id="editLength">
+                <option value="3–4 kalimat" ${(data.length||'')==='3–4 kalimat'?'selected':''}>3–4 kalimat</option>
+                <option value="4–6 kalimat" ${(data.length||'')==='4–6 kalimat'?'selected':''}>4–6 kalimat</option>
+                <option value="6–8 kalimat" ${(data.length||'')==='6–8 kalimat'?'selected':''}>6–8 kalimat</option>
+                <option value="short" ${(data.length||'')==='short'?'selected':''}>short</option>
+                <option value="medium" ${(data.length||'')==='medium'?'selected':''}>medium</option>
+                <option value="long" ${(data.length||'')==='long'?'selected':''}>long</option>
+              </select>
+            </div>
+          </details>
+          <details class="preset-section">
+            <summary style="cursor:pointer;font-weight:600;padding:6px 0">🔍 Section 5: SEO & Discovery</summary>
+            <div style="padding:8px 0 0 12px;display:flex;flex-direction:column;gap:8px">
+              <label>Keyword Utama (SEO Focus)</label>
+              <input id="editKeywordMain" placeholder="skincare murah" value="${esc(data.keywordMain)}" />
+              <label>Keyword Tambahan (comma separated)</label>
+              <input id="editKeywordExtra" placeholder="glowing, wajah bersih, aman" value="${esc(data.keywordExtra)}" />
+              <label>Hashtag Strategy</label>
+              <select id="editHashtagStrategy">
+                <option value="">—</option>
+                <option value="Niche + keyword" ${(data.hashtagStrategy||'')==='Niche + keyword'?'selected':''}>Niche + keyword</option>
+                <option value="Keyword + trending" ${(data.hashtagStrategy||'')==='Keyword + trending'?'selected':''}>Keyword + trending</option>
+                <option value="Campuran" ${(data.hashtagStrategy||'')==='Campuran'?'selected':''}>Campuran</option>
+              </select>
+              <label>Jumlah Hashtag</label>
+              <input type="number" id="editHashtagCount" min="1" max="30" value="${data.hashtagCount != null ? data.hashtagCount : 10}" style="max-width:80px" />
+            </div>
+          </details>
+          <details class="preset-section">
+            <summary style="cursor:pointer;font-weight:600;padding:6px 0">📢 Section 6: Engagement & Conversion</summary>
+            <div style="padding:8px 0 0 12px;display:flex;flex-direction:column;gap:8px">
+              <label>CTA Utama (Penjualan)</label>
+              <input id="editCtaMain" placeholder="Klik keranjang sekarang" value="${esc(data.ctaMain || data.cta)}" />
+              <label>Link/CTA Affiliate (opsional)</label>
+              <input id="editCtaAffiliate" placeholder="Link di bio / Klik link" value="${esc(data.ctaAffiliate || '')}" />
+              <label>CTA Engagement</label>
+              <div style="display:flex;flex-wrap:wrap;gap:8px">
+                <label><input type="checkbox" name="editCtaEngagement" value="Comment" ${ctaEngArr.includes('Comment')?'checked':''} /> Comment</label>
+                <label><input type="checkbox" name="editCtaEngagement" value="Save" ${ctaEngArr.includes('Save')?'checked':''} /> Save</label>
+                <label><input type="checkbox" name="editCtaEngagement" value="Share" ${ctaEngArr.includes('Share')?'checked':''} /> Share</label>
+                <label><input type="checkbox" name="editCtaEngagement" value="Follow" ${ctaEngArr.includes('Follow')?'checked':''} /> Follow</label>
+              </div>
+              <label>Engagement Goal</label>
+              <select id="editEngagementGoal">
+                <option value="">—</option>
+                <option value="Komentar" ${(data.engagementGoal||'')==='Komentar'?'selected':''}>Komentar</option>
+                <option value="Save" ${(data.engagementGoal||'')==='Save'?'selected':''}>Save</option>
+                <option value="Share" ${(data.engagementGoal||'')==='Share'?'selected':''}>Share</option>
+                <option value="Kombinasi" ${(data.engagementGoal||'')==='Kombinasi'?'selected':''}>Kombinasi</option>
+              </select>
+            </div>
+          </details>
+          <details class="preset-section">
+            <summary style="cursor:pointer;font-weight:600;padding:6px 0">🚫 Section 7: Control & Quality</summary>
+            <div style="padding:8px 0 0 12px;display:flex;flex-direction:column;gap:8px">
+              <label>Larangan (Negative Rules)</label>
+              <textarea id="editNegativeRules" rows="2" placeholder="Jangan menyebut AI, jangan bahasa formal, jangan terlalu panjang">${esc(data.negativeRules)}</textarea>
+              <label>Batas Kalimat / Karakter (Maks kata)</label>
+              <input type="number" id="editMaxWords" min="1" max="500" value="${data.maxWords != null ? data.maxWords : 120}" style="max-width:80px" />
+              <label>Forbidden Words (opsional)</label>
+              <input id="editForbiddenWords" placeholder="gratis palsu, clickbait" value="${esc(data.forbiddenWords)}" />
+            </div>
+          </details>
+          <details class="preset-section">
+            <summary style="cursor:pointer;font-weight:600;padding:6px 0">🔁 Section 8: Productivity</summary>
+            <div style="padding:8px 0 0 12px;display:flex;flex-direction:column;gap:8px">
+              <label>Jumlah Variasi Output</label>
+              <input type="number" id="editVariationCount" min="1" max="10" value="${data.variationCount != null ? data.variationCount : 3}" style="max-width:80px" />
+              <label><input type="checkbox" id="editConsistencyRule" ${data.consistencyRule?'checked':''} /> Aktifkan preset ini untuk semua output sampai diganti</label>
+            </div>
+          </details>
+          <details class="preset-section">
+            <summary style="cursor:pointer;font-weight:600;padding:6px 0">🧪 Section 9: Advanced (Optional)</summary>
+            <div style="padding:8px 0 0 12px;display:flex;flex-direction:column;gap:8px">
+              <label>Example Output (Few-shot)</label>
+              <textarea id="editExampleOutput" rows="3" placeholder="Contoh caption ideal...">${esc(data.exampleOutput)}</textarea>
+              <label>Trending Context</label>
+              <input id="editTrendingContext" placeholder="Tren skincare 2026" value="${esc(data.trendingContext)}" />
+              <label>Keyword Priority Order</label>
+              <input id="editKeywordPriorityOrder" placeholder="Keyword 1 → Keyword 2 → Keyword 3" value="${esc(data.keywordPriorityOrder)}" />
+            </div>
+          </details>
         </div>
       `
       const listEl = document.getElementById('presetsList')
       listEl.insertAdjacentElement('afterbegin', modal)
 
+      function readForm(){
+        return {
+          label: getEditVal('editLabel') || key,
+          platform: getEditVal('editPlatform') || 'tiktok',
+          goal: getEditChecks('editGoal'),
+          role: getEditVal('editRole'),
+          targetAudience: getEditVal('editTargetAudience'),
+          tone: getEditVal('editTone'),
+          languageRules: getEditVal('editLanguageRules'),
+          emotionTrigger: getEditChecks('editEmotion'),
+          structure: getEditVal('editStructure'),
+          hookStyle: getEditVal('editHookStyle'),
+          formatOutput: getEditVal('editFormatOutput'),
+          length: getEditVal('editLength'),
+          keywordMain: getEditVal('editKeywordMain'),
+          keywordExtra: getEditVal('editKeywordExtra'),
+          hashtagStrategy: getEditVal('editHashtagStrategy'),
+          hashtagCount: getEditNum('editHashtagCount', 10),
+          ctaMain: getEditVal('editCtaMain'),
+          cta: getEditVal('editCtaMain'),
+          ctaAffiliate: getEditVal('editCtaAffiliate'),
+          ctaEngagement: getEditChecks('editCtaEngagement'),
+          engagementGoal: getEditVal('editEngagementGoal'),
+          negativeRules: getEditVal('editNegativeRules'),
+          maxWords: getEditNum('editMaxWords', 120),
+          forbiddenWords: getEditVal('editForbiddenWords'),
+          variationCount: getEditNum('editVariationCount', 3),
+          consistencyRule: !!document.getElementById('editConsistencyRule')?.checked,
+          exampleOutput: getEditVal('editExampleOutput'),
+          trendingContext: getEditVal('editTrendingContext'),
+          keywordPriorityOrder: getEditVal('editKeywordPriorityOrder')
+        }
+      }
+
+      modal.querySelectorAll('button[data-template]').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          const t = window.PresetsManager.getTemplatePreset(btn.getAttribute('data-template'))
+          if(!t) return
+          document.getElementById('editLabel').value = t.label || ''
+          document.getElementById('editPlatform').value = t.platform || 'tiktok'
+          document.querySelectorAll('input[name="editGoal"]').forEach(el=>{ el.checked = (t.goal||[]).includes(el.value) })
+          document.getElementById('editRole').value = t.role || ''
+          document.getElementById('editTargetAudience').value = t.targetAudience || ''
+          document.getElementById('editTone').value = t.tone || ''
+          document.getElementById('editLanguageRules').value = t.languageRules || ''
+          document.querySelectorAll('input[name="editEmotion"]').forEach(el=>{ el.checked = (t.emotionTrigger||[]).includes(el.value) })
+          document.getElementById('editStructure').value = t.structure || ''
+          document.getElementById('editHookStyle').value = t.hookStyle || ''
+          document.getElementById('editFormatOutput').value = t.formatOutput || ''
+          document.getElementById('editLength').value = t.length || 'short'
+          document.getElementById('editKeywordMain').value = t.keywordMain || ''
+          document.getElementById('editKeywordExtra').value = t.keywordExtra || ''
+          document.getElementById('editHashtagStrategy').value = t.hashtagStrategy || ''
+          document.getElementById('editHashtagCount').value = t.hashtagCount != null ? t.hashtagCount : 10
+          document.getElementById('editCtaMain').value = t.ctaMain || t.cta || ''
+          document.getElementById('editCtaAffiliate').value = t.ctaAffiliate || ''
+          document.querySelectorAll('input[name="editCtaEngagement"]').forEach(el=>{ el.checked = (t.ctaEngagement||[]).includes(el.value) })
+          document.getElementById('editEngagementGoal').value = t.engagementGoal || ''
+          document.getElementById('editNegativeRules').value = t.negativeRules || ''
+          document.getElementById('editMaxWords').value = t.maxWords != null ? t.maxWords : 120
+          document.getElementById('editForbiddenWords').value = t.forbiddenWords || ''
+          document.getElementById('editVariationCount').value = t.variationCount != null ? t.variationCount : 3
+          document.getElementById('editConsistencyRule').checked = !!t.consistencyRule
+          document.getElementById('editExampleOutput').value = t.exampleOutput || ''
+          document.getElementById('editTrendingContext').value = t.trendingContext || ''
+          document.getElementById('editKeywordPriorityOrder').value = t.keywordPriorityOrder || ''
+        })
+      })
+
       document.getElementById('cancelPresetEd').addEventListener('click', ()=>{ modal.remove(); renderList() })
       document.getElementById('savePresetEd').addEventListener('click', ()=>{
-        const label = document.getElementById('editLabel').value || key
-        const platform = document.getElementById('editPlatform').value || 'youtube'
-        const goal = document.getElementById('editGoal').value || ''
-        const tone = document.getElementById('editTone').value || ''
-        const length = document.getElementById('editLength').value || 'short'
-        const cta = document.getElementById('editCta').value || ''
-        const structure = document.getElementById('editStructure').value || ''
-        const hashtagCount = parseInt(document.getElementById('editHashtagCount').value || '6', 10) || 6
-        window.PresetsManager.upsert(key, { label, platform, goal, tone, length, cta, structure, hashtagCount })
+        window.PresetsManager.upsert(key, readForm())
         modal.remove()
         renderList()
         updatePresetDropdown()
@@ -787,9 +1239,9 @@ function mountAIGeneratorMain(){
 
     document.getElementById('createPresetBtn').addEventListener('click', ()=>{
       const name = String(document.getElementById('newPresetName').value||'').trim()
-      if(!name) return alert('Masukkan nama preset')
-      if(window.PresetsManager.get(name)) return alert('Preset sudah ada')
-      window.PresetsManager.upsert(name, { label: name, platform: 'youtube', goal: '', tone: '', length: 'short', cta: '', structure: '', hashtagCount: 6 })
+      if(!name){ showToast('Masukkan nama preset', 'error'); return }
+      if(window.PresetsManager.get(name)){ showToast('Preset sudah ada', 'error'); return }
+      window.PresetsManager.upsert(name, Object.assign(window.PresetsManager.getDefaultPreset(), { label: name }))
       document.getElementById('newPresetName').value = ''
       renderList()
       updatePresetDropdown()
@@ -808,6 +1260,51 @@ function mountAIGeneratorMain(){
       }
     })
 
+    // Export backup: download presets as JSON file (simpan aman di komputer/cloud)
+    const exportBackupBtn = document.getElementById('presetsExportBackupBtn')
+    if (exportBackupBtn) {
+      exportBackupBtn.addEventListener('click', ()=>{
+        const backup = window.PresetsManager.exportBackup()
+        const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `genco_presets_backup_${new Date().toISOString().slice(0,10)}.json`
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        URL.revokeObjectURL(url)
+      })
+    }
+
+    // Import backup: pilih file .json lalu merge ke presets
+    const importBackupInput = document.getElementById('presetsImportBackupInput')
+    if (importBackupInput) {
+      importBackupInput.addEventListener('change', (e)=>{
+        const file = e.target.files && e.target.files[0]
+        if (!file) return
+        const reader = new FileReader()
+        reader.onload = ()=>{
+          try {
+            const raw = reader.result
+            const data = typeof raw === 'string' ? JSON.parse(raw) : raw
+            const result = window.PresetsManager.importBackup(data)
+            if (result.success) {
+              renderList()
+              updatePresetDropdown()
+              showToast('Backup di-import. ' + (result.mergedCount ? result.mergedCount + ' preset digabung.' : ''), 'success')
+            } else {
+              showToast('Import gagal: ' + (result.error || 'format tidak valid'), 'error')
+            }
+          } catch (err) {
+            showToast('Import gagal: file bukan JSON valid. ' + (err && err.message), 'error')
+          }
+          e.target.value = ''
+        }
+        reader.readAsText(file)
+      })
+    }
+
     // Close button wiring: hide presets and show generator
     const closeBtn = document.getElementById('presetsCloseBtn')
     if(closeBtn){
@@ -822,9 +1319,10 @@ function mountAIGeneratorMain(){
         }catch(e){/* ignore */}
       })
     }
+    })
   }
 
-  // preview helper: render preset summary in generator panel
+  // preview helper: render preset summary + when preset used, disable Keyword & Tone dropdowns (murni dari preset)
   function updatePresetPreview(key){
     const previewElId = 'presetPreview'
     let el = document.getElementById(previewElId)
@@ -839,37 +1337,54 @@ function mountAIGeneratorMain(){
       el.style.borderRadius = '6px'
       panel.appendChild(el)
     }
-    if(!key){ el.innerHTML = '<em>No preset selected</em>'; 
-      // remove any preset tone note
-      const prevNote = document.getElementById('presetToneNote'); if(prevNote) prevNote.remove();
-      return }
+    const presetNoteId = 'presetControlsNote'
+    let presetNote = document.getElementById(presetNoteId)
+
+    if(!key){
+      el.innerHTML = '<em>No preset selected</em>'
+      if(presetNote) presetNote.remove()
+      try{
+        const toneSel = document.getElementById('aiToneSelect'); if(toneSel){ toneSel.disabled = false }
+        const kwSel = document.getElementById('aiKeywordSelect'); if(kwSel){ kwSel.disabled = false }
+        const varBtn = document.getElementById('aiVariationsBtn'); if(varBtn) varBtn.textContent = 'Buat 3 variasi'
+      }catch(e){}
+      return
+    }
     const p = window.PresetsManager.get(key)
     if(!p) return el.innerHTML = '<em>Preset not found</em>'
-    el.innerHTML = `<div style="font-size:13px"><strong>${p.label}</strong> — ${p.goal || ''} · ${p.tone || ''} · ${p.length || ''}</div><div style="font-size:12px;margin-top:6px">Platform: ${p.platform || ''} · CTA: ${p.cta || ''} · Structure: ${p.structure || ''} · Hashtags: ${p.hashtagCount || ''}</div>`
+    const goals = Array.isArray(p.goal) && p.goal.length ? p.goal.join(', ') : (p.goal || '')
+    const cta = p.ctaMain || p.cta || ''
+    el.innerHTML = `<div style="font-size:13px"><strong>${p.label || key}</strong> — ${goals} · ${p.tone || ''} · ${p.length || ''}</div><div style="font-size:12px;margin-top:6px">Platform: ${p.platform || ''} · CTA: ${cta} · Structure: ${p.structure || ''} · Hashtags: ${p.hashtagCount != null ? p.hashtagCount : ''}</div>`
+    if(p.platform){
+      const platformEl = document.getElementById('aiPlatformSelect')
+      if(platformEl && ['youtube','tiktok','instagram','facebook','x','shopee'].indexOf(p.platform) >= 0) platformEl.value = p.platform
+    }
     try{ aiLog('info','presetPreview',{ key, preview: p }) }catch(e){}
-    // If preset defines a tone, apply it to the tone dropdown and show a small note
+
+    // Preset aktif: nonaktifkan Keyword & Tone dropdown — pakai murni dari preset
     try{
-      if(p.tone){
-        const toneSel = document.getElementById('aiToneSelect')
-        if(toneSel){
-          const normalized = String(p.tone||'').trim()
-          const opt = Array.from(toneSel.options).find(o=>String(o.value||'').toLowerCase() === normalized.toLowerCase() || String(o.textContent||'').toLowerCase() === normalized.toLowerCase())
-          let note = document.getElementById('presetToneNote')
-          if(!note){ note = document.createElement('div'); note.id = 'presetToneNote'; note.style.fontSize = '12px'; note.style.marginTop = '6px'; note.style.color = '#c9d0b3'; toneSel.parentNode && toneSel.parentNode.appendChild(note) }
-          if(opt){
-            toneSel.value = opt.value
-            toneSel.disabled = true
-            note.textContent = 'Tone diset dari preset: ' + opt.textContent
-          } else {
-            // preset tone doesn't match available options; leave current selection and notify
-            toneSel.disabled = true
-            note.textContent = 'Preset tone: ' + p.tone + ' (tidak cocok dengan opsi)'
-          }
-        }
-      } else {
-        const prevNote = document.getElementById('presetToneNote'); if(prevNote) prevNote.remove();
-        try{ const toneSel = document.getElementById('aiToneSelect'); if(toneSel) toneSel.disabled = false }catch(e){}
+      const toneSel = document.getElementById('aiToneSelect')
+      const kwSel = document.getElementById('aiKeywordSelect')
+      if(toneSel) toneSel.disabled = true
+      if(kwSel) kwSel.disabled = true
+      if(!presetNote){
+        presetNote = document.createElement('div')
+        presetNote.id = presetNoteId
+        presetNote.style.fontSize = '12px'
+        presetNote.style.marginTop = '6px'
+        presetNote.style.color = '#c9d0b3'
+        const wrap = document.querySelector('#aiMainContainer .panel.card .generate-row') || toneSel?.parentNode || el
+        if(wrap) wrap.insertAdjacentElement('beforebegin', presetNote)
       }
+      presetNote.innerHTML = (p.tone ? `<span>Tone (dari preset): <strong>${String(p.tone).replace(/</g,'&lt;')}</strong>. </span>` : '') + 'Menggunakan keyword & tone dari preset.'
+      if(p.consistencyRule){
+        try{ localStorage.setItem(ACTIVE_PRESET_KEY, key) }catch(e){}
+      }else{
+        try{ if(localStorage.getItem(ACTIVE_PRESET_KEY) === key) localStorage.removeItem(ACTIVE_PRESET_KEY) }catch(e){}
+      }
+      const n = (p.variationCount != null ? Math.min(10, Math.max(1, p.variationCount)) : 3)
+      const varBtn = document.getElementById('aiVariationsBtn')
+      if(varBtn) varBtn.textContent = 'Buat ' + n + ' variasi'
     }catch(e){}
   }
 
@@ -893,8 +1408,24 @@ function mountAIGeneratorMain(){
   // expose update function globally so main can call it
   window.updatePresetDropdown = updatePresetDropdown
 
-  // populate dropdown immediately now that function exists and update preview
-  try{ updatePresetDropdown(); const sel = document.getElementById('aiPresetSelect'); if(sel) updatePresetPreview(sel.value || ''); }catch(e){}
+  // populate dropdown after optional backend sync (so presets are global/cross-device)
+  ;(window.PresetsManager.syncFromBackend || (()=>Promise.resolve()))().then(()=>{
+    try{
+      updatePresetDropdown()
+      const sel = document.getElementById('aiPresetSelect')
+      const activeKey = (function(){ try{ return localStorage.getItem(ACTIVE_PRESET_KEY) || '' }catch(e){ return '' } })()
+      if(sel){
+        if(activeKey && window.PresetsManager.get(activeKey)){
+          sel.value = activeKey
+          updatePresetPreview(activeKey)
+          const label = (window.PresetsManager.get(activeKey)||{}).label || activeKey
+          showToast('Preset "' + label + '" aktif.', 'info')
+        } else {
+          updatePresetPreview(sel.value || '')
+        }
+      }
+    }catch(e){}
+  })
   // keyword suggest wiring
   try{
     const suggestBtn = document.getElementById('aiKeywordSuggestBtn')
@@ -953,7 +1484,12 @@ async function loadModelsFor(prov, modelEl){
   const pinned = {
     gemini: ['models/gemini-2.5-flash', 'models/gemini-2.5-flash-lite'],
     openai: ['gpt-4o-mini'],
-    openrouter: ['meta-llama/llama-3-8b-instruct']
+    openrouter: ['meta-llama/llama-3-8b-instruct'],
+    groq: ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile', 'mixtral-8x7b-32768'],
+    together: ['meta-llama/Llama-3-70b-chat-hf', 'mistralai/Mixtral-8x7B-Instruct-v0.1', 'deepseek-ai/DeepSeek-V3'],
+    cohere: ['command-r-plus-08-2024', 'command-r7b-12-2024', 'command-a-03-2025'],
+    huggingface: ['meta-llama/Llama-3-70b-chat-hf', 'mistralai/Mixtral-8x7B-Instruct-v0.1', 'Qwen/Qwen2.5-72B-Instruct'],
+    deepseek: ['deepseek-chat', 'deepseek-reasoner']
   }
   ;(pinned[prov]||[]).forEach(v=>{
     const opt = document.createElement('option')
@@ -970,7 +1506,7 @@ async function loadModelsFor(prov, modelEl){
     return String(localStorage.getItem('ai_api_key')||'').trim()
   }
   const lsKeyFor = (p) => `ai_model_${p}`
-  const recommendedDefaults = { gemini: 'models/gemini-2.5-flash', openai: 'gpt-4o-mini', openrouter: 'meta-llama/llama-3-8b-instruct' }
+  const recommendedDefaults = { gemini: 'models/gemini-2.5-flash', openai: 'gpt-4o-mini', openrouter: 'meta-llama/llama-3-8b-instruct', groq: 'llama-3.1-8b-instant', together: 'meta-llama/Llama-3-70b-chat-hf', cohere: 'command-r-plus-08-2024', huggingface: 'meta-llama/Llama-3-70b-chat-hf', deepseek: 'deepseek-chat' }
 
   const key = getKeyForProvider(prov)
   const backendURL = getBackendURL()
@@ -1026,55 +1562,51 @@ async function loadModelsFor(prov, modelEl){
   if(choose) modelEl.value = choose
 }
 async function generateFromMain(){
+  const title = (document.getElementById('aiMainTitle')?.value || '').trim()
+  const overview = (document.getElementById('aiMainOverview')?.value || '').trim()
+  if(!title && !overview){
+    showToast('Isi minimal Title atau Overview untuk generate.', 'error')
+    return
+  }
+
   const lang = document.getElementById('aiLangSelect')?.value || 'id'
   const prov = document.getElementById('aiProviderSelect')?.value || 'gemini'
   const model = document.getElementById('aiModelSelect')?.value || ''
   const apiKey = (function(){ try{ const raw = localStorage.getItem('ai-settings'); if(raw){ const s = JSON.parse(raw); const k = s?.keys?.[prov]; if(k) return String(k).trim() } }catch(e){} return String(localStorage.getItem('ai_api_key')||'').trim() })()
   const platformEl = document.getElementById('aiPlatformSelect')
   const platforms = platformEl ? [platformEl.value] : ['youtube']
-  const chosenKeyword = document.getElementById('aiKeywordSelect')?.value || ''
-  const tone = document.getElementById('aiToneSelect')?.value || 'neutral'
-  const title = document.getElementById('aiMainTitle')?.value || ''
-  const overview = document.getElementById('aiMainOverview')?.value || ''
-  // build preset-based instructions (do not overwrite user description)
+  const { tone } = getEffectiveToneAndKeywords()
+  const keywords = getSelectedKeywords()
   let presetInstructions = ''
+  let presetObj = null
   try{
     const presetSel = document.getElementById('aiPresetSelect')
     const presetKey = presetSel ? String(presetSel.value||'').trim() : ''
     if(presetKey){
-      const p = window.PresetsManager.get(presetKey)
-      if(p){
-        presetInstructions = `Platform: ${p.platform || platforms[0]}. Goal: ${p.goal || ''}. Tone: ${p.tone || ''}. Length: ${p.length || ''}. CTA: ${p.cta || ''}. Structure: ${p.structure || ''}. HashtagCount: ${p.hashtagCount || ''}.`
-      }
+      presetObj = window.PresetsManager.get(presetKey)
+      if(presetObj) presetInstructions = (window.PresetsManager.buildPresetInstructions && window.PresetsManager.buildPresetInstructions(presetObj)) || ''
     }
-  }catch(e){ presetInstructions = '' }
+  }catch(e){}
 
   const panel = document.getElementById('aiResultPanel')
-  panel.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><strong>Results</strong><div><button id="aiExportCSV" style="padding:6px 10px;border-radius:6px;margin-left:8px">Export CSV</button></div></div>'
-
-  const platformInstructions = {
-    youtube: 'YouTube Shorts rules:\n- Title <= 60 chars, hooky.\n- Description 1–2 short sentences + CTA (watch/follow).\n- Hashtags: 6–10, mix broad + niche.',
-    tiktok: 'TikTok rules:\n- Title <= 70 chars, punchy.\n- Description 1–2 short lines, conversational.\n- Hashtags: 8–15.',
-    instagram: 'Instagram Reels rules:\n- Title <= 70 chars.\n- Description 2–3 lines, energetic.\n- Hashtags: 12–25.',
-    facebook: 'Facebook post rules:\n- Title <= 80 chars.\n- Description 2–4 sentences with engagement question.\n- Hashtags: 3–8.',
-    x: 'X (Twitter) rules:\n- Title <= 70 chars.\n- Description <= 240 chars.\n- Hashtags: 1–3 only.',
-    shopee: 'Shopee listing rules:\n- Title <= 60 chars.\n- Description: 2–4 short bullet points focusing on benefits.\n- Tags: 5–12 product/category focused.'
+  panel.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;gap:10px;padding:24px;color:#888"><span class="spinner" style="display:inline-block;width:20px;height:20px;border:2px solid rgba(255,255,255,0.2);border-top-color:#fff;border-radius:50%;animation:genco-spin 0.8s linear infinite"></span> Generating...</div>'
+  if(!document.getElementById('genco-spinner-style')){
+    const style = document.createElement('style')
+    style.id = 'genco-spinner-style'
+    style.textContent = '@keyframes genco-spin { to { transform: rotate(360deg); } }'
+    document.head.appendChild(style)
   }
 
   const extractJson = (txt) => { const m = String(txt||'').match(/\{[\s\S]*\}/); if(!m) return null; try{ return JSON.parse(m[0]) }catch(e){ return null } }
-  const forceJsonPrompt = (basePrompt) => `${basePrompt}\n\nIMPORTANT: Return ONLY valid JSON. No markdown, no explanations. If you cannot, output {"title":"","description":"","hashtags":[]} only.`.trim()
+  const forceJsonPrompt = (basePrompt) => `${basePrompt}\n\nIMPORTANT: Return ONLY valid JSON. No markdown, no explanations. If you cannot, output {"title":"","description":"","hashtags":[],"hook":"","narratorScript":""} only.`.trim()
 
   try{
     if(!apiKey) throw new Error('AI API key is empty for selected provider (set it in Settings, then Save)')
     const results = []
 
     for(const platform of (platforms.length?platforms:['youtube'])){
-      const platformInstruction = platformInstructions[platform] || ''
-      const presetSel = document.getElementById('aiPresetSelect')
-      const presetKey = presetSel ? String(presetSel.value||'').trim() : ''
-      aiLog('info','generate.request.prepare',{ provider: prov, model, lang, platform, title, overview, chosenKeyword, tone, presetKey, apiKeyPresent: !!apiKey, apiKeyMasked: maskKey(apiKey) })
-      const languageInstruction = lang === 'en' ? 'Respond ONLY in English. Do not use any other language.' : 'Respond ONLY in Indonesian. Do not use any other language.'
-      const prompt = `${languageInstruction}\nYou are a creative social copywriter.\nPlatform: ${platform}.\nWrite in ${lang === 'id' ? 'Indonesian' : 'English'}.\n\nContext:\n- Title: "${title}"\n- Overview: "${overview}"\n- Keyword focus: ${chosenKeyword||'none'}\n- Tone: ${tone}\n\n${platformInstruction}\n\n${presetInstructions ? ('Preset rules: ' + presetInstructions + '\\n\\n') : ''}Virality rules:\n- Start description with a hook in the first 6–10 words.\n- Add a clear CTA.\n\nOutput JSON only:{"title":"...","description":"...","hashtags":["#..","#.."]}\nReturn only the JSON.`.trim()
+      aiLog('info','generate.request.prepare',{ provider: prov, model, lang, platform, title, overview, keywords, tone, apiKeyPresent: !!apiKey, apiKeyMasked: maskKey(apiKey) })
+      const prompt = buildFullPrompt({ title, overview, platform, lang, preset: presetObj, tone: tone || 'neutral', keywords, presetInstructions })
 
       let raw = null
       aiLog('debug','generate.prompt',{ prompt })
@@ -1090,12 +1622,19 @@ async function generateFromMain(){
         try{ const reprompt = forceJsonPrompt(prompt); const raw2 = await window.AI.generate({ provider: prov, apiKey, prompt: reprompt, model }); parsed = extractJson(raw2); aiLog('info','generate.reprompt',{ platform, repromptUsed: true }) }catch(e){ aiLog('error','generate.reprompt.error',{ platform, error: String(e) }) }
       }
 
-      if(!parsed) parsed = { title: '', description: String(raw||'').slice(0,800), hashtags: [] }
+      if(!parsed) parsed = { title: '', description: String(raw||'').slice(0,800), hashtags: [], hook: '', narratorScript: '' }
+      if(!parsed.hook) parsed.hook = ''
+      if(!parsed.narratorScript) parsed.narratorScript = ''
       aiLog('info','generate.parsed',{ platform, parsed })
       results.push({ platform, parsed })
+    }
 
-      // render card
+    const esc = (s)=> String(s||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    const batchId = Date.now()
+    panel.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><strong>Results</strong><div><button id="aiExportCSV" style="padding:6px 10px;border-radius:6px;margin-left:8px">Export CSV</button></div></div>'
+    results.forEach(({ platform, parsed })=>{
       const idSafe = `aiRes_${platform}`
+      const feedbackId = `${batchId}_${platform}`
       const card = document.createElement('div')
       card.style.borderTop = '1px solid rgba(255,255,255,0.04)'
       card.style.paddingTop = '10px'
@@ -1103,26 +1642,70 @@ async function generateFromMain(){
       card.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:flex-start">
           <strong style="text-transform:capitalize">${platform}</strong>
-          <div style="display:flex;gap:8px">
+          <div style="display:flex;flex-wrap:wrap;gap:6px">
+            <button data-feedback-id="${feedbackId}" data-feedback-rating="good" style="padding:4px 8px;border-radius:6px;font-size:11px">Bagus</button>
+            <button data-feedback-id="${feedbackId}" data-feedback-rating="bad" style="padding:4px 8px;border-radius:6px;font-size:11px">Kurang</button>
+            <button data-copy-all="${idSafe}" style="padding:6px;border-radius:6px">Copy all</button>
+            <button data-copy-caption="${idSafe}" style="padding:6px;border-radius:6px">Copy as caption</button>
             <button data-copy-target="${idSafe}_title" style="padding:6px;border-radius:6px">Copy Title</button>
             <button data-copy-target="${idSafe}_desc" style="padding:6px;border-radius:6px">Copy Desc</button>
+            <button data-copy-target="${idSafe}_hook" style="padding:6px;border-radius:6px">Copy Hook</button>
+            <button data-copy-target="${idSafe}_narrator" style="padding:6px;border-radius:6px">Copy Script</button>
             <button data-copy-target="${idSafe}_tags" style="padding:6px;border-radius:6px">Copy Tags</button>
           </div>
         </div>
-        <div id="${idSafe}_title" style="margin-top:8px;color:#d9cd71">${parsed.title || ''}</div>
-        <div id="${idSafe}_desc" style="margin-top:8px;color:#fff">${parsed.description || ''}</div>
-        <div id="${idSafe}_tags" style="margin-top:8px;color:#2c9dc1">${Array.isArray(parsed.hashtags)?parsed.hashtags.join(' '):(parsed.hashtags||'')}</div>
+        <div style="margin-top:8px;font-size:12px;color:#b0b0b0">Title</div>
+        <div id="${idSafe}_title" style="margin-top:4px;color:#d9cd71">${esc(parsed.title)}</div>
+        <div style="margin-top:8px;font-size:12px;color:#b0b0b0">Description / Overview</div>
+        <div id="${idSafe}_desc" style="margin-top:4px;color:#fff">${esc(parsed.description)}</div>
+        <div style="margin-top:8px;font-size:12px;color:#b0b0b0">Hook</div>
+        <div id="${idSafe}_hook" style="margin-top:4px;color:#e8c547">${esc(parsed.hook)}</div>
+        <div style="margin-top:8px;font-size:12px;color:#b0b0b0">Script narator/voice</div>
+        <div id="${idSafe}_narrator" style="margin-top:4px;color:#a8d8ea">${esc(parsed.narratorScript)}</div>
+        <div style="margin-top:8px;font-size:12px;color:#b0b0b0">Hashtags</div>
+        <div id="${idSafe}_tags" style="margin-top:4px;color:#2c9dc1">${Array.isArray(parsed.hashtags)?parsed.hashtags.join(' '):(parsed.hashtags||'')}</div>
       `
       panel.appendChild(card)
-    }
+    })
 
     // per-card copy wiring
+    function copyTextAndToast(text, btn, prevLabel){
+      if(!text){ showToast('Nothing to copy', 'info'); return }
+      navigator.clipboard.writeText(text).then(()=>{ showToast('Copied to clipboard', 'success'); if(btn){ const prev = prevLabel != null ? prevLabel : btn.textContent; btn.textContent = 'Copied'; setTimeout(()=> btn.textContent = prev, 1200) } }).catch(()=> showToast('Copy failed', 'error'))
+    }
     panel.querySelectorAll('button[data-copy-target]').forEach(b=>{
-      b.addEventListener('click', async ()=>{
+      b.addEventListener('click', ()=>{
         const tgt = b.getAttribute('data-copy-target')
         const el = document.getElementById(tgt)
         const text = el ? el.textContent : ''
-        try{ await navigator.clipboard.writeText(text); const prev = b.textContent; b.textContent = 'Copied'; setTimeout(()=>b.textContent = prev,1200) }catch(e){}
+        copyTextAndToast(text, b)
+      })
+    })
+    panel.querySelectorAll('button[data-copy-all]').forEach(b=>{
+      b.addEventListener('click', ()=>{
+        const prefix = b.getAttribute('data-copy-all')
+        const parts = ['title','desc','hook','narrator','tags'].map(k=> { const el = document.getElementById(prefix + '_' + k); return el ? el.textContent : '' })
+        const text = parts.join('\n\n')
+        copyTextAndToast(text, b)
+      })
+    })
+    panel.querySelectorAll('button[data-copy-caption]').forEach(b=>{
+      b.addEventListener('click', ()=>{
+        const prefix = b.getAttribute('data-copy-caption')
+        const descEl = document.getElementById(prefix + '_desc')
+        const tagsEl = document.getElementById(prefix + '_tags')
+        const desc = descEl ? descEl.textContent : ''
+        const tags = tagsEl ? tagsEl.textContent : ''
+        const text = tags ? (desc + '\n\n' + tags).trim() : desc
+        copyTextAndToast(text, b)
+      })
+    })
+    panel.querySelectorAll('button[data-feedback-id]').forEach(b=>{
+      b.addEventListener('click', ()=>{
+        const id = b.getAttribute('data-feedback-id')
+        const rating = b.getAttribute('data-feedback-rating') || 'good'
+        setFeedback(id, rating)
+        showToast(rating === 'good' ? 'Terima kasih!' : 'Feedback tercatat.', 'success')
       })
     })
 
@@ -1130,77 +1713,117 @@ async function generateFromMain(){
     const exportBtn = document.getElementById('aiExportCSV')
     if(exportBtn){
       exportBtn.addEventListener('click', ()=>{
-        const rows = [['platform','title','description','hashtags']]
-        results.forEach(r=> rows.push([r.platform, r.parsed.title.replace(/"/g,'""'), r.parsed.description.replace(/"/g,'""'), Array.isArray(r.parsed.hashtags)?r.parsed.hashtags.join(' '):r.parsed.hashtags]))
+        const rows = [['platform','title','description','hook','narratorScript','hashtags']]
+        results.forEach(r=> rows.push([r.platform, (r.parsed.title||'').replace(/"/g,'""'), (r.parsed.description||'').replace(/"/g,'""'), (r.parsed.hook||'').replace(/"/g,'""'), (r.parsed.narratorScript||'').replace(/"/g,'""'), Array.isArray(r.parsed.hashtags)?r.parsed.hashtags.join(' '):(r.parsed.hashtags||'')]))
         const csv = rows.map(r => r.map(c=>`"${String(c||'').replace(/\"/g,'""')}"`).join(',')).join('\n')
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url; a.download = `${(title||'content').replace(/[^a-z0-9\-]/gi,'_')}_social.csv`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
+        showToast('CSV exported', 'success')
       })
     }
-
-  }catch(err){ console.error('AI generation failed', err); panel.appendChild(document.createElement('div')).textContent = 'AI generation failed. See console.' }
+    const goals = (presetObj && Array.isArray(presetObj.goal) && presetObj.goal.length) ? presetObj.goal.join(', ') : ''
+    pushGenerateHistory({ ts: Date.now(), title, overview, platform: platforms[0], presetKey: presetObj ? (document.getElementById('aiPresetSelect')?.value || '') : '', goals, type: 'generate', results })
+  }catch(err){ console.error('AI generation failed', err); showToast(err && err.message ? err.message : 'AI generation failed.', 'error'); panel.innerHTML = '<div style="padding:12px;color:#c66">AI generation failed. See console.</div>' }
 }
 
-async function generateVariations(count = 3) {
+async function generateVariations(count) {
+  const title = (document.getElementById('aiMainTitle')?.value || '').trim()
+  const overview = (document.getElementById('aiMainOverview')?.value || '').trim()
+  if(!title && !overview){
+    showToast('Isi minimal Title atau Overview untuk generate.', 'error')
+    return
+  }
   const lang = document.getElementById('aiLangSelect')?.value || 'id'
   const prov = document.getElementById('aiProviderSelect')?.value || 'gemini'
   const model = document.getElementById('aiModelSelect')?.value || ''
   const apiKey = (function(){ try{ const raw = localStorage.getItem('ai-settings'); if(raw){ const s = JSON.parse(raw); const k = s?.keys?.[prov]; if(k) return String(k).trim() } }catch(e){} return String(localStorage.getItem('ai_api_key')||'').trim() })()
   const platform = document.getElementById('aiPlatformSelect')?.value || 'youtube'
-  const chosenKeyword = document.getElementById('aiKeywordSelect')?.value || ''
-  const tone = document.getElementById('aiToneSelect')?.value || 'neutral'
-  const title = document.getElementById('aiMainTitle')?.value || ''
-  const overview = document.getElementById('aiMainOverview')?.value || ''
-
-  const panel = document.getElementById('aiResultPanel')
-  panel.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><strong>Variations</strong><div></div></div>`
-
-  // build presetInstructions for variations
+  const { tone } = getEffectiveToneAndKeywords()
+  const keywords = getSelectedKeywords()
+  let presetObj = null
   let presetInstructions = ''
   try{
     const presetSel = document.getElementById('aiPresetSelect')
     const presetKey = presetSel ? String(presetSel.value||'').trim() : ''
-    if(presetKey){ const p = window.PresetsManager.get(presetKey); if(p) presetInstructions = `Platform: ${p.platform||platform}. Goal: ${p.goal||''}. Tone: ${p.tone||''}. Length: ${p.length||''}. CTA: ${p.cta||''}. Structure: ${p.structure||''}. HashtagCount: ${p.hashtagCount||''}.` }
-  }catch(e){ presetInstructions = '' }
+    if(presetKey){ presetObj = window.PresetsManager.get(presetKey); if(presetObj) presetInstructions = (window.PresetsManager.buildPresetInstructions && window.PresetsManager.buildPresetInstructions(presetObj)) || '' }
+  }catch(e){}
+  const resolvedCount = typeof count === 'number' && count >= 1 ? count : (presetObj && presetObj.variationCount != null ? Math.min(10, Math.max(1, presetObj.variationCount)) : 3)
 
-  const platformInstructionMap = { youtube: 'YouTube Shorts rules: Title <= 60 chars, Description short, Hashtags 6–10.', tiktok: 'TikTok rules: punchy, Hashtags 8–15.', instagram: 'Instagram: energetic, Hashtags 12–25.', shopee: 'Shopee: product-focused, 5 tags.' }
-  const platformInstruction = platformInstructionMap[platform] || ''
+  const panel = document.getElementById('aiResultPanel')
+  panel.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><strong>Variations</strong><div id="variationsLoading" style="font-size:12px;color:#888"></div></div>`
+
+  const extractJson = (txt) => { const m = String(txt||'').match(/\{[\s\S]*\}/); if(!m) return null; try{ return JSON.parse(m[0]) }catch(e){ return null } }
 
   try{
     if(!apiKey) throw new Error('AI API key is empty for selected provider (set it in Settings, then Save)')
     const results = []
+    const loadingEl = document.getElementById('variationsLoading')
 
-    for(let i=0;i<count;i++){
-      const prompt = `You are a creative social copywriter. Platform: ${platform}. Write in ${lang==='id'?'Indonesian':'English'}.\nContext:\n- Title: "${title}"\n- Overview: "${overview}"\n- Keyword focus: ${chosenKeyword||'none'}\n- Tone: ${tone}\n\n${platformInstruction}\n\n${presetInstructions ? ('Preset rules: ' + presetInstructions + '\\n\\n') : ''}\nReturn only JSON: {"title":"...","description":"...","hashtags":["#.."]}`
+    const batchIdVar = Date.now()
+    for(let i=0;i<resolvedCount;i++){
+      if(loadingEl) loadingEl.textContent = `Variasi ${i+1}/${resolvedCount}...`
+      const prompt = buildFullPrompt({ title, overview, platform, lang, preset: presetObj, tone: tone || 'neutral', keywords, presetInstructions })
 
       let raw = null
       try{ raw = await window.AI.generate({ provider: prov, apiKey, prompt, model }) }catch(e){ raw = String(e?.message||e) }
 
-      let parsed = null
-      try{ parsed = JSON.parse((String(raw).match(/\{[\s\S]*\}/)||[''])[0]) }catch(e){ parsed = { title: '', description: String(raw||'').slice(0,800), hashtags: [] } }
+      let parsed = extractJson(String(raw || ''))
+      if(!parsed) parsed = { title: '', description: String(raw||'').slice(0,800), hashtags: [], hook: '', narratorScript: '' }
+      if(!parsed.hook) parsed.hook = ''
+      if(!parsed.narratorScript) parsed.narratorScript = ''
       results.push({ i: i+1, parsed, raw })
 
-      // render card
+      const esc = (s)=> String(s||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      const feedbackIdVar = `${batchIdVar}_var_${i}`
       const card = document.createElement('div')
       card.style.borderTop = '1px solid rgba(255,255,255,0.04)'
       card.style.paddingTop = '10px'
       card.style.marginTop = '10px'
-      card.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:flex-start"><strong>Var ${i+1}</strong><div style="display:flex;gap:8px"><button data-copy-target="var_${i}_title">Copy Title</button><button data-copy-target="var_${i}_desc">Copy Desc</button><button data-copy-target="var_${i}_tags">Copy Tags</button></div></div><div id="var_${i}_title" style="margin-top:8px;color:#d9cd71">${parsed.title||''}</div><div id="var_${i}_desc" style="margin-top:8px;color:#fff">${parsed.description||''}</div><div id="var_${i}_tags" style="margin-top:8px;color:#2c9dc1">${Array.isArray(parsed.hashtags)?parsed.hashtags.join(' '):parsed.hashtags||''}</div>`
+      card.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:flex-start"><strong>Var ${i+1}</strong><div style="display:flex;flex-wrap:wrap;gap:6px"><button data-feedback-id="${feedbackIdVar}" data-feedback-rating="good" style="padding:4px 8px;border-radius:6px;font-size:11px">Bagus</button><button data-feedback-id="${feedbackIdVar}" data-feedback-rating="bad" style="padding:4px 8px;border-radius:6px;font-size:11px">Kurang</button><button data-copy-all="var_${i}">Copy all</button><button data-copy-caption="var_${i}">Copy as caption</button><button data-copy-target="var_${i}_title">Copy Title</button><button data-copy-target="var_${i}_desc">Copy Desc</button><button data-copy-target="var_${i}_hook">Copy Hook</button><button data-copy-target="var_${i}_narrator">Copy Script</button><button data-copy-target="var_${i}_tags">Copy Tags</button></div></div><div style="margin-top:6px;font-size:12px;color:#b0b0b0">Title</div><div id="var_${i}_title" style="margin-top:4px;color:#d9cd71;background:#040f1abd;padding:10px;border-radius:8px">${esc(parsed.title)}</div><div style="margin-top:6px;font-size:12px;color:#b0b0b0">Description / Overview</div><div id="var_${i}_desc" style="margin-top:4px;color:#fff;background:#040f1abd;padding:10px;border-radius:8px">${esc(parsed.description)}</div><div style="margin-top:6px;font-size:12px;color:#b0b0b0">Hook</div><div id="var_${i}_hook" style="margin-top:4px;color:#e8c547;background:#040f1abd;padding:10px;border-radius:8px">${esc(parsed.hook)}</div><div style="margin-top:6px;font-size:12px;color:#b0b0b0">Script narator/voice</div><div id="var_${i}_narrator" style="margin-top:4px;color:#a8d8ea;background:#040f1abd;padding:10px;border-radius:8px">${esc(parsed.narratorScript)}</div><div style="margin-top:6px;font-size:12px;color:#b0b0b0">Hashtags</div><div id="var_${i}_tags" style="margin-top:4px;color:#2c9dc1;background:#040f1abd;padding:10px;border-radius:8px">${Array.isArray(parsed.hashtags)?parsed.hashtags.join(' '):(parsed.hashtags||'')}</div>`
       panel.appendChild(card)
     }
 
+    if(loadingEl) loadingEl.textContent = ''
+
+    function copyTextAndToastVar(text, btn){
+      if(!text){ showToast('Nothing to copy', 'info'); return }
+      navigator.clipboard.writeText(text).then(()=>{ showToast('Copied to clipboard', 'success'); if(btn){ const prev = btn.textContent; btn.textContent = 'Copied'; setTimeout(()=> btn.textContent = prev, 1200) } }).catch(()=> showToast('Copy failed', 'error'))
+    }
     panel.querySelectorAll('button[data-copy-target]').forEach(b=>{
-      b.addEventListener('click', async ()=>{
+      b.addEventListener('click', ()=>{
         const tgt = b.getAttribute('data-copy-target')
         const el = document.getElementById(tgt)
-        const text = el ? el.textContent : ''
-        try{ await navigator.clipboard.writeText(text); const prev = b.textContent; b.textContent = 'Copied'; setTimeout(()=>b.textContent = prev,1200) }catch(e){}
+        copyTextAndToastVar(el ? el.textContent : '', b)
+      })
+    })
+    panel.querySelectorAll('button[data-copy-all]').forEach(b=>{
+      b.addEventListener('click', ()=>{
+        const prefix = b.getAttribute('data-copy-all')
+        const parts = ['title','desc','hook','narrator','tags'].map(k=> { const el = document.getElementById(prefix + '_' + k); return el ? el.textContent : '' })
+        copyTextAndToastVar(parts.join('\n\n'), b)
+      })
+    })
+    panel.querySelectorAll('button[data-copy-caption]').forEach(b=>{
+      b.addEventListener('click', ()=>{
+        const prefix = b.getAttribute('data-copy-caption')
+        const descEl = document.getElementById(prefix + '_desc')
+        const tagsEl = document.getElementById(prefix + '_tags')
+        const desc = descEl ? descEl.textContent : ''
+        const tags = tagsEl ? tagsEl.textContent : ''
+        copyTextAndToastVar(tags ? (desc + '\n\n' + tags).trim() : desc, b)
+      })
+    })
+    panel.querySelectorAll('button[data-feedback-id]').forEach(b=>{
+      b.addEventListener('click', ()=>{
+        const id = b.getAttribute('data-feedback-id')
+        const rating = b.getAttribute('data-feedback-rating') || 'good'
+        setFeedback(id, rating)
+        showToast(rating === 'good' ? 'Terima kasih!' : 'Feedback tercatat.', 'success')
       })
     })
 
-    // export JSON
     const exp = document.createElement('div')
     exp.style.marginTop = '10px'
     exp.innerHTML = `<button id="exportJsonVariations" class="primary">Export JSON</button>`
@@ -1210,9 +1833,12 @@ async function generateVariations(count = 3) {
       const blob = new Blob([json], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a'); a.href = url; a.download = `${(title||'variations').replace(/[^a-z0-9\-]/gi,'_')}_variations.json`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
+      showToast('JSON exported', 'success')
     })
-
-  }catch(err){ console.error('generateVariations failed', err); panel.appendChild(document.createElement('div')).textContent = 'Variations failed. See console.' }
+    const presetKey = document.getElementById('aiPresetSelect')?.value || ''
+    const goalsVar = (presetObj && Array.isArray(presetObj.goal) && presetObj.goal.length) ? presetObj.goal.join(', ') : ''
+    pushGenerateHistory({ ts: Date.now(), title, overview, platform, presetKey, goals: goalsVar, type: 'variations', results })
+  }catch(err){ console.error('generateVariations failed', err); showToast(err && err.message ? err.message : 'Variations failed.', 'error'); panel.innerHTML = '<div style="padding:12px;color:#c66">Variations failed. See console.</div>' }
 }
 
 async function loadMedia(page = 1){
@@ -1459,7 +2085,7 @@ async function generateAIContent(){
   const md = document.getElementById('modalDetails')
   const id = md?.getAttribute('data-media-id')
   const mediaType = md?.getAttribute('data-media-type')
-  if(!id || !mediaType) { alert('No media selected'); return }
+  if(!id || !mediaType) { showToast('No media selected', 'error'); return }
   const title = document.getElementById('modalTitle')?.textContent || ''
   const overview = document.getElementById('modalOverview')?.textContent || ''
   try{
@@ -1472,7 +2098,7 @@ async function generateAIContent(){
     document.getElementById('aiDescription').textContent = parsed.description || '-'
     document.getElementById('aiHashtags').textContent = Array.isArray(parsed.hashtags) ? parsed.hashtags.map(h=>`#${h}`).join(' ') : '-'
     document.getElementById('aiResult').style.display = 'block'
-  }catch(err){ console.error('AI generate error', err); alert('AI generate failed. See console.') }
+  }catch(err){ console.error('AI generate error', err); showToast('AI generate failed. See console.', 'error') }
 }
 
 // expose handlers used by inline attributes
