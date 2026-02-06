@@ -632,14 +632,6 @@ select:hover, button:hover { background: var(--bg-tertiary); border-color: var(-
   .panel, .preset-editor-modal {
     padding:40px;
 }
-.stat_serv {
-  position: relative;
-  bottom: 10px;
-}
-}
-#presetsBackendIndicator {
-  background: rgb(0 40 20 / 0%) !important;
-    border: 1px solid rgb(106 168 136 / 0%) !important;
 }
 
 .content-main{ display:flex; gap:12px }
@@ -709,7 +701,7 @@ textarea#aiMainOverview {
   .burger-btn{ display:inline-flex; align-items:center; justify-content:center; width:55px; height:44px; border-radius:8px; background:transparent; border:1px solid var(--border-color); color:var(--accent); font-size:20px; cursor:pointer }
 
   /* Make header controls stack and become full-width */
-  .header-controls{ flex-direction: column-reverse; gap:10px; align-items:stretch }
+  .header-controls{ flex-direction:column; gap:10px; align-items:stretch }
   .header-controls .select, .header-controls .small{ width:100%; min-width:0; min-height:44px; padding:12px; font-size:16px; }
 
   .content-main{ flex-direction:column; gap:12px }
