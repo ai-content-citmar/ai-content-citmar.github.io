@@ -31,98 +31,6 @@ function getAuthHeaders(additionalHeaders = {}){
   return headers
 }
 
-/** Update backend status indicator in real-time (used in header and presets page) */
-function updateBackendStatusIndicator(elementId){
-  const el = document.getElementById(elementId)
-  if (!el) return
-
-  const url = getBackendURL() || ''
-  const token = localStorage.getItem('auth_token')
-  const isLocal = /127\.0\.0\.1|localhost|^https?:\/\/\[?::1\]?/i.test(url)
-
-  // default offline state
-  function setOffline(){
-    el.innerHTML = '🔴 OFFLINE'
-    el.style.background = 'rgba(80,0,0,0.25)'
-    el.dataset.status = 'offline'
-    el.style.display = 'flex'
-    el.style.alignItems = 'center'
-    el.style.gap = '6px'
-    el.style.fontFamily = 'monospace'
-    el.style.padding = '6px 8px'
-    el.style.borderRadius = '6px'
-    el.style.fontSize = '12px'
-    el.style.border = '1px solid rgba(106,168,136,0.2)'
-  }
-
-  if (!url) { setOffline(); return }
-
-  const pingUrl = String(url).replace(/\/+$/,'') + '/ai/debug'
-  const controller = new AbortController()
-  const timeoutMs = 1500
-  const timer = setTimeout(()=> controller.abort(), timeoutMs)
-
-  fetch(pingUrl, { method: 'GET', headers: token ? { Authorization: 'Bearer ' + token } : {}, signal: controller.signal })
-    .then(async res => {
-      clearTimeout(timer)
-      // if not ok, treat as reachable but unauthenticated or error
-      let data = null
-      try{ data = await res.json() }catch(e){ data = null }
-
-      let serverName = 'INVALD'
-      try{ serverName = (new URL(url)).hostname.substring(0,7).toUpperCase() }catch(e){ serverName = 'INVALD' }
-
-      if (res.ok && data && data.ok){
-        // connected
-        el.innerHTML = `🟢 ${serverName} ${isLocal ? '(Local)' : '(Cloud)'} — Connected`
-        el.style.background = isLocal ? 'rgba(0,40,20,0.3)' : 'rgba(0,30,60,0.3)'
-        el.dataset.status = 'connected'
-      } else if (res.ok && data && !data.ok){
-        // server reachable but reports not-ok
-        el.innerHTML = `🟡 ${serverName} ${isLocal ? '(Local)' : '(Cloud)'} — No Auth`
-        el.style.background = 'rgba(80,60,0,0.3)'
-        el.dataset.status = 'noauth'
-      } else if (res.status === 401) {
-        el.innerHTML = `🟡 ${serverName} ${isLocal ? '(Local)' : '(Cloud)'} — No Auth`
-        el.style.background = 'rgba(80,60,0,0.3)'
-        el.dataset.status = 'noauth'
-      } else {
-        // unexpected response
-        el.innerHTML = `🟡 ${serverName} ${isLocal ? '(Local)' : '(Cloud)'} — Responded`
-        el.style.background = 'rgba(80,60,0,0.2)'
-        el.dataset.status = 'responded'
-      }
-
-      // common styling
-      el.style.display = 'flex'
-      el.style.alignItems = 'center'
-      el.style.gap = '6px'
-      el.style.fontFamily = 'monospace'
-      el.style.padding = '6px 8px'
-      el.style.borderRadius = '6px'
-      el.style.fontSize = '12px'
-      el.style.border = '1px solid rgba(106,168,136,0.2)'
-    })
-    .catch(err => {
-      clearTimeout(timer)
-      setOffline()
-    })
-}
-
-// Start periodic polling for both header and presets indicators (once)
-if (!window._backendStatusPollStarted) {
-  window._backendStatusPollStarted = true
-  const pollIntervalMs = 5000
-  const doPoll = ()=>{
-    try{ updateBackendStatusIndicator('Status-server') }catch(e){}
-    try{ updateBackendStatusIndicator('presetsBackendIndicator') }catch(e){}
-  }
-  // initial immediate check
-  setTimeout(doPoll, 250)
-  // periodic
-  window._backendStatusPollHandle = setInterval(doPoll, pollIntervalMs)
-}
-
 /** Jika preset dipakai: tone & keyword dari preset; jika tidak: dari dropdown generator. */
 function getEffectiveToneAndKeywords(){
   try{
@@ -553,9 +461,11 @@ function mountAIGeneratorMain(){
             <option value="pinterest">Pinterest</option>
           </select>
         </div>
-        <div style="display:flex;gap:8px;justify-content:center">
-          <div class="stat_serv" id="Status-server"></div>
-           </div>
+        <div style="display:flex;gap:8px">
+          <button class="primary" id="gotoGenerator">Generator</button>
+          <button id="gotoHistory">History</button>
+          <button id="gotoPreset">Preset</button>
+        </div>
       `
 
       if(mainEl){
@@ -566,8 +476,6 @@ function mountAIGeneratorMain(){
         headerEl.insertAdjacentElement('afterend', cp)
       }
       console.debug('mountAIGeneratorMain: control panel inserted')
-      // populate backend status indicator in header
-      updateBackendStatusIndicator('Status-server')
     }
   })()
 
@@ -690,17 +598,11 @@ function mountAIGeneratorMain(){
         <h2 style="margin-top:0">Settings</h2>
         <div class="control-pane">
           <div class="control-group">
-              <div class="control-label" style="display:flex;align-items:center;gap:8px">
               <label>Backend URL</label>
-              <div id="presetsBackendIndicator" style="margin-left:8px;font-size:12px;color:#6a8;padding:6px 8px;background:rgba(0,40,20,0.3);border-radius:6px;border:1px solid rgba(106,168,136,0.2);display:flex;align-items:center;gap:6px;font-family:monospace">🔴 OFFLINE</div>
-              </div>
               <div style="display:flex;gap:8px;align-items:center">
-                <div style="display:flex;gap:8px;align-items:center;flex:1">
-                  <input id="settingsBackendURL" class="form-input" type="text" style="flex:1" placeholder="https://your-backend.workers.dev" />
-                  <button id="settingsBackendTest" class="secondary">Test</button>
-                  <button id="settingsBackendSave" class="primary">Save</button>
-                </div>
-                
+                <input id="settingsBackendURL" class="form-input" type="text" style="flex:1" placeholder="https://your-backend.workers.dev" />
+                <button id="settingsBackendTest" class="secondary">Test</button>
+                <button id="settingsBackendSave" class="primary">Save</button>
               </div>
               <div style="font-size:12px;margin-top:6px;color:#c9d0b3">Backend untuk AI dan penyimpanan presets. Lokal (mis. http://127.0.0.1:8787) = simpan di project; external (mis. workers.dev) = simpan di server tersebut.</div>
             </div>
@@ -762,11 +664,8 @@ function mountAIGeneratorMain(){
 
           <div id="settingsStatus" class="status info" style="display:none;margin-top:12px"></div>
         </div>
-          </div>
+      </div>
     `
-
-        // update the backend status indicator now that element exists in Settings
-        updateBackendStatusIndicator('presetsBackendIndicator')
 
     function showStatus(msg, type='info'){
       const el = document.getElementById('settingsStatus')
@@ -1281,7 +1180,7 @@ function mountAIGeneratorMain(){
           <input id="newPresetName" class="form-input" placeholder="Nama preset baru" style="flex:1;min-width:160px" />
           <button id="createPresetBtn" class="primary">Buat</button>
         </div>
-        
+        <div id="presetsBackendIndicator" style="margin-top:10px;font-size:11px;color:#6a8;padding:6px 8px;background:rgba(0,40,20,0.3);border-radius:6px"></div>
         <div style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.08);display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <span style="font-size:12px;color:#888">Backup aman (simpan ke file):</span>
           <button id="presetsExportBackupBtn" class="secondary" type="button">Export backup (.json)</button>
@@ -1293,7 +1192,26 @@ function mountAIGeneratorMain(){
       </div>
     `
 
-    // presetsBackendIndicator moved to Settings page; ensure no stale call remains here
+    // Tampilkan backend aktif: presets selalu disimpan ke backend ini (lokal atau external)
+    const presetsBackendIndicator = document.getElementById('presetsBackendIndicator')
+    if (presetsBackendIndicator) {
+      const url = (window.PresetsManager && window.PresetsManager.getBackendURL()) || ''
+      if (url) {
+        const token = localStorage.getItem('auth_token')
+        if (!token) {
+          presetsBackendIndicator.textContent = `Backend: ${url} — Login diperlukan`;
+          presetsBackendIndicator.style.background = 'rgba(80,30,20,0.25)';
+        } else {
+          presetsBackendIndicator.textContent = `Backend: ${url}`;
+        }
+        const isLocal = /127\.0\.0\.1|localhost|^https?:\/\/\[?::1\]?/i.test(url)
+        let info = 'Presets disimpan ke backend: ' + (isLocal ? 'Lokal (project)' : 'External') + ' — ' + url
+        if (!token) info += ' (login diperlukan)'
+        presetsBackendIndicator.textContent = info
+      } else {
+        presetsBackendIndicator.textContent = 'Presets hanya di browser. Set Backend URL di Settings agar tersimpan ke server.'
+      }
+    }
 
     function renderList(){
       const listEl = document.getElementById('presetsList')
