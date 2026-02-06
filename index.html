@@ -9,14 +9,29 @@
   <link rel="icon" type="image/svg+xml" href="./img/logo.svg" />
   <base href="./">
 
+  <script>
+    // Redirect ke halaman login jika belum ada token (cek cepat sebelum content dimuat)
+    try {
+      if (!localStorage.getItem('auth_token')) {
+        window.location.replace('login.html');
+      }
+    } catch (e) { /* ignore */ }
+  </script>
+
+  <!-- Theme System (CSS Variables for light/dark mode) -->
+  <link rel="stylesheet" href="./css/theme.css" />
+  
   <!-- Main Style -->
   <link rel="stylesheet" href="./css/style.css" />
+
+  <!-- Theme Manager (loads & applies saved theme before page renders) -->
+  <script src="./js/theme.js?v=1"></script>
 </head>
 
 <body>
 
   <!-- Main AI Generator Container -->
-  <section id="ai-main" style="max-width:1100px;margin:0px auto;padding:0px;border-radius:10px;background:#0b0c0d;">
+  <section id="ai-main" style="max-width:1100px;margin:0px auto;padding:0px;border-radius:10px;background:var(--bg-secondary);">
     <header id="aiMainHeader"></header>
     <div id="aiMainContainer">Loading AI UI...</div>
     <div id="ai-settings-placeholder" style="display:none"></div>
